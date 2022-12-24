@@ -1,3 +1,141 @@
+// * Dependencies
+
+class BinaryHeap {
+	content: Tile[];
+	scores: TileScoreSet;
+
+	constructor() {
+		this.content = [];
+		this.scores = {};
+	}
+
+	scoreFunction(tile: Tile) {
+		if (this.scores[key(tile)]) {
+			return this.scores[key(tile)];
+		}
+		return +Infinity;
+	}
+
+	push(element: Tile, score: number) {
+		// Add the new element to the end of the array.
+		this.content.push(element);
+		this.scores[key(element)] = score;
+
+		// Allow it to sink down.
+		this.sinkDown(this.content.length - 1);
+	}
+
+	pop() {
+		// Store the first element so we can return it later.
+		var result = this.content[0];
+		// Get the element at the end of the array.
+		var end = this.content.pop()!;
+		// If there are any elements left, put the end element at the
+		// start, and let it bubble up.
+		if (this.content.length > 0) {
+			this.content[0] = end;
+			this.bubbleUp(0);
+		}
+		return result;
+	}
+
+	remove(node: Tile) {
+		var i = this.content.indexOf(node);
+
+		// When it is found, the process seen in 'pop' is repeated
+		// to fill up the hole.
+		var end = this.content.pop()!;
+
+		if (i !== this.content.length - 1) {
+			this.content[i] = end;
+
+			if (this.scoreFunction(end) < this.scoreFunction(node)) {
+				this.sinkDown(i);
+			} else {
+				this.bubbleUp(i);
+			}
+		}
+	}
+
+	size() {
+		return this.content.length;
+	}
+
+	rescoreElement(node: Tile) {
+		this.sinkDown(this.content.indexOf(node));
+	}
+
+	sinkDown(n: number) {
+		// Fetch the element that has to be sunk.
+		var element = this.content[n];
+
+		// When at 0, an element can not sink any further.
+		while (n > 0) {
+			// Compute the parent element's index, and fetch it.
+			var parentN = ((n + 1) >> 1) - 1;
+			var parent = this.content[parentN];
+			// Swap the elements if the parent is greater.
+			if (this.scoreFunction(element) < this.scoreFunction(parent)) {
+				this.content[parentN] = element;
+				this.content[n] = parent;
+				// Update 'n' to continue at the new position.
+				n = parentN;
+			}
+			// Found a parent that is less, no need to sink any further.
+			else {
+				break;
+			}
+		}
+	}
+
+	bubbleUp(n: number) {
+		// Look up the target element and its score.
+		var length = this.content.length;
+		var element = this.content[n];
+		var elemScore = this.scoreFunction(element);
+
+		while (true) {
+			// Compute the indices of the child elements.
+			var child2N = (n + 1) << 1;
+			var child1N = child2N - 1;
+			// This is used to store the new position of the element, if any.
+			var swap = null;
+			var child1Score = Infinity;
+			// If the first child exists (is inside the array)...
+			if (child1N < length) {
+				// Look it up and compute its score.
+				var child1 = this.content[child1N];
+				child1Score = this.scoreFunction(child1);
+
+				// If the score is less than our element's, we need to swap.
+				if (child1Score < elemScore) {
+					swap = child1N;
+				}
+			}
+
+			// Do the same checks for the other child.
+			if (child2N < length) {
+				var child2 = this.content[child2N];
+				var child2Score = this.scoreFunction(child2);
+				if (child2Score < (swap === null ? elemScore : child1Score)) {
+					swap = child2N;
+				}
+			}
+
+			// If the element needs to be moved, swap it, and continue.
+			if (swap !== null) {
+				this.content[n] = this.content[swap];
+				this.content[swap] = element;
+				n = swap;
+			}
+			// Otherwise, we are done.
+			else {
+				break;
+			}
+		}
+	}
+}
+
 // * Global utility
 
 enum Owner {
@@ -53,15 +191,6 @@ function key(tile: { x: number; y: number }): symbol {
 	return tileKeys[tile.x][tile.y];
 }
 
-/*function reconstruct(cameFrom: TileSet, current: Tile) {
-	const path = [current];
-	while (cameFrom[key(current)]) {
-		current = cameFrom[key(current)];
-		path.push(current);
-	}
-	return path;
-}*/
-
 let directions = [
 	[-1, 0],
 	[0, -1],
@@ -71,16 +200,15 @@ let directions = [
 
 function aStar(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
 	const startKey = key(start);
-	let openSet = [start];
+	let openSet = new BinaryHeap();
+	openSet.push(start, 0);
 	let cameFrom: TileSet = {};
 	let gScore: TileScoreSet = { [startKey]: 0 };
-	let fScore: TileScoreSet = { [startKey]: 1 };
 
-	while (openSet.length > 0) {
-		let node = openSet.splice(0, 1)[0];
+	while (openSet.size() > 0) {
+		const node = openSet.pop();
 		const useKey = key(node);
 		if (goal(node)) {
-			// return reconstruct(cameFrom, node);
 			return node;
 		}
 
@@ -94,25 +222,37 @@ function aStar(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
 			if (gScore[neighborKey] === undefined || score < gScore[neighborKey]) {
 				cameFrom[neighborKey] = node;
 				gScore[neighborKey] = score;
-				score += 1;
-				fScore[neighborKey] = score;
-				// Sorted insert
-				let inserted = false;
-				for (let i = 0; i < openSet.length; i++) {
-					if (score < fScore[key(openSet[i])]) {
-						openSet.splice(i, 0, neighbor);
-						inserted = true;
-						break;
-					}
-				}
-				if (!inserted) {
-					openSet.push(neighbor);
-				}
+				openSet.push(neighbor, score + 1);
 			}
 		}
 	}
 
-	return false;
+	return null;
+}
+
+function bfs(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
+	const explored: { [key: symbol]: boolean } = { [key(start)]: true };
+	const queue: Tile[] = [start];
+
+	while (queue.length > 0) {
+		const node = queue.splice(0, 1)[0];
+		if (goal(node)) {
+			return node;
+		}
+		const neighborPositions = directions
+			.map((d): Position => [node.x + d[0], node.y + d[1]])
+			.filter((p) => exists(p) && !map[p[0]][p[1]].blocked);
+		for (const [x, y] of neighborPositions) {
+			const neighbor = map[x][y];
+			const neighborKey = key(neighbor);
+			if (!explored[neighborKey]) {
+				explored[neighborKey] = true;
+				queue.push(neighbor);
+			}
+		}
+	}
+
+	return null;
 }
 
 function closestEnemyCondition(node: Tile) {
@@ -132,7 +272,6 @@ function reachGoalCondition(goal: Tile) {
 		return node.x === goal.x && node.y === goal.y;
 	};
 }
-
 // * Map utility
 
 function tileScrapValue(map: TileMap, tile: Tile) {
@@ -249,8 +388,7 @@ function tileClosingSpaces(map: TileMap, tile: Tile): [Tile, Tile] | false {
 		cTile.blocked = true;
 		const dTile = map[dNeighbor[0]][dNeighbor[1]];
 		dTile.blocked = true;
-		const reachable =
-			!aStar(map, cTile, reachGoalCondition(dTile)) && (spaceSize(cTile) > 3 || spaceSize(dTile) > 3);
+		const reachable = !bfs(map, cTile, reachGoalCondition(dTile)) && (spaceSize(cTile) > 3 || spaceSize(dTile) > 3);
 		cTile.blocked = false;
 		dTile.blocked = false;
 		if (reachable) {
@@ -271,8 +409,7 @@ function tileClosingSpaces(map: TileMap, tile: Tile): [Tile, Tile] | false {
 		aTile.blocked = true;
 		const bTile = map[bNeighbor[0]][bNeighbor[1]];
 		bTile.blocked = true;
-		const reachable =
-			!aStar(map, aTile, reachGoalCondition(bTile)) && (spaceSize(aTile) > 3 || spaceSize(bTile) > 3);
+		const reachable = !bfs(map, aTile, reachGoalCondition(bTile)) && (spaceSize(aTile) > 3 || spaceSize(bTile) > 3);
 		aTile.blocked = false;
 		bTile.blocked = false;
 		if (reachable) {
@@ -528,7 +665,7 @@ while (true) {
 		// * Attack if possible
 		// TODO
 		// * Move if nothing to do
-		const closestUnownedTile = aStar(map, unitTile, unownedTileCondition);
+		const closestUnownedTile = bfs(map, unitTile, unownedTileCondition);
 		if (closestUnownedTile) {
 			const destination = closestUnownedTile;
 			destination.movingUnits += 1;
@@ -549,9 +686,6 @@ while (true) {
 
 	if (action.length > 0) {
 		console.log(`MESSAGE ${Date.now() - roundStart}ms;${action.join(";")}`);
-	} else if (round > 15 && myMatter > 10) {
-		const amount = Math.floor(myMatter / 10);
-		console.log(`MESSAGE ${Date.now() - roundStart}ms;SPAWN ${amount} ${ownedTiles[0][1]} ${ownedTiles[0][0]}`);
 	} else {
 		console.log(`MESSAGE ${Date.now() - roundStart}ms;WAIT`);
 	}
