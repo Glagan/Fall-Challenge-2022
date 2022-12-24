@@ -274,17 +274,6 @@ function reachGoalCondition(goal: Tile) {
 }
 // * Map utility
 
-function tileScrapValue(map: TileMap, tile: Tile) {
-	let value = tile.scrapAmount;
-	for (const direction of directions) {
-		const position: Position = [tile.x + direction[0], tile.y + direction[1]];
-		if (exists(position)) {
-			value += map[position[0]][position[1]].scrapAmount;
-		}
-	}
-	return value;
-}
-
 function adjacentMovableTiles(map: TileMap, tile: Tile) {
 	let tiles = [];
 	for (const direction of directions) {
@@ -330,22 +319,18 @@ function closeTileSummary(map: TileMap, tile: Tile, range: number): CloseTileSum
 	return summary;
 }
 
-function mostProfitableRecyclerTile(map: TileMap, ownedTiles: Position[]): [Tile, number] | null {
-	let mostProfitableTile: [Tile, number] | null = null;
+function mostProfitableRecyclerTile(map: TileMap, ownedTiles: Position[]): Tile | null {
+	let mostProfitableTile: Tile | null = null;
 	for (const ownedTile of ownedTiles) {
 		const tile = map[ownedTile[0]][ownedTile[1]];
-		if (!tile.canBuild || tile.units > 0 || tile.hasAction || tile.closed) {
+		if (!tile.canBuild || tile.hasAction) {
 			continue;
 		}
-		const neighbors = tile.neighbors().filter((n) => !n.blocked);
-		let tileProfit = tile.scrapAmount + neighbors.length;
-		for (const neighbor of neighbors) {
-			if (!neighbor.inRangeOfRecycler) {
-				tileProfit += neighbor.scrapAmount;
-			}
-		}
-		if (tileProfit > 0 && (!mostProfitableTile || mostProfitableTile[1] < tileProfit)) {
-			mostProfitableTile = [tile, tileProfit];
+		if (
+			tile.neighbors().every((n) => !n.blocked && n.scrapAmount > tile.scrapAmount) &&
+			(!mostProfitableTile || mostProfitableTile.scrapAmount < tile.scrapAmount)
+		) {
+			mostProfitableTile = tile;
 		}
 	}
 	return mostProfitableTile;
@@ -512,6 +497,7 @@ while (true) {
 	const freeTiles: Position[] = [];
 	const selfRobotTiles: Position[] = [];
 	const foeRobotTiles: Position[] = [];
+	let recyclers = 0;
 	// Input
 	for (let i = 0; i < height; i++) {
 		const row: Tile[] = [];
@@ -555,6 +541,9 @@ while (true) {
 				foeTiles.push([i, j]);
 			} else {
 				freeTiles.push([i, j]);
+			}
+			if (recycler) {
+				recyclers += 1;
 			}
 			if (units > 0) {
 				if (owner === Owner.Self) {
@@ -648,12 +637,12 @@ while (true) {
 		}
 	}
 	// ? Farm resources
-	if (round > 10 && round < 15) {
+	if (round > 2 && round < 15 && recyclers < 5) {
 		const tile = mostProfitableRecyclerTile(map, ownedTiles);
-		if (tile && tile[1] > 40) {
-			action.push(`BUILD ${tile[0].y} ${tile[0].x}`);
-			tile[0].blocked = true;
-			tile[0].hasAction = true;
+		if (tile && tile.scrapAmount > 2) {
+			action.push(`BUILD ${tile.y} ${tile.x}`);
+			tile.blocked = true;
+			tile.hasAction = true;
 		}
 	}
 	// ? Move robots to control, defend or attack
