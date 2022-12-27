@@ -162,7 +162,6 @@ type Tile = {
 	blocked: boolean;
 	movingUnits: number;
 	hasAction: boolean;
-	closed: boolean;
 	neighbors: () => Tile[];
 };
 type TileMap = Tile[][];
@@ -248,10 +247,10 @@ const blockingChecks = [
 
 function aStar(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
 	const startKey = key(start);
-	let openSet = new BinaryHeap();
+	const openSet = new BinaryHeap();
 	openSet.push(start, 0);
-	let cameFrom: TileSet = {};
-	let gScore: TileScoreSet = { [startKey]: 0 };
+	const cameFrom: TileSet = {};
+	const gScore: TileScoreSet = { [startKey]: 0 };
 
 	while (openSet.size() > 0) {
 		const node = openSet.pop();
@@ -265,8 +264,8 @@ function aStar(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
 			.filter((p) => exists(p) && !map[p[0]][p[1]].blocked)
 			.map((p) => map[p[0]][p[1]]);
 		for (const neighbor of neighbors) {
-			let neighborKey = key(neighbor);
-			let score = gScore[useKey] + 1;
+			const neighborKey = key(neighbor);
+			const score = gScore[useKey] + 1;
 			if (gScore[neighborKey] === undefined || score < gScore[neighborKey]) {
 				cameFrom[neighborKey] = node;
 				gScore[neighborKey] = score;
@@ -304,7 +303,7 @@ function bfs(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
 }
 
 function closestEnemyCondition(node: Tile) {
-	return !node.hasAction && node.owner === Owner.Foe;
+	return node.owner === Owner.Foe && !node.hasAction;
 }
 
 function closestAllyCondition(node: Tile) {
@@ -447,6 +446,16 @@ function closeTileSummary(map: TileMap, tile: Tile, range: number): CloseTileSum
 			}
 		}
 	}
+	summary.blocking =
+		summary.blocking &&
+		((exists([tile.x - 1, tile.y]) &&
+			exists([tile.x + 1, tile.y]) &&
+			!map[tile.x - 1][tile.y].blocked &&
+			!map[tile.x + 1][tile.y].blocked) ||
+			(exists([tile.x, tile.y - 1]) &&
+				exists([tile.x, tile.y + 1]) &&
+				!map[tile.x][tile.y - 1].blocked &&
+				!map[tile.x][tile.y + 1].blocked));
 	return summary;
 }
 
@@ -465,109 +474,6 @@ function mostProfitableRecyclerTile(map: TileMap, ownedTiles: Position[]): Tile 
 		}
 	}
 	return mostProfitableTile;
-}
-
-function spaceSize(around: Tile) {
-	let tiles: TileSet = {};
-	let explore: Tile[] = [around];
-	while (explore.length > 0) {
-		const tile = explore.splice(0, 1)[0];
-		for (const neighbor of tile.neighbors()) {
-			if (!neighbor.blocked) {
-				const neighborKey = key(neighbor);
-				if (!tiles[neighborKey]) {
-					tiles[neighborKey] = neighbor;
-					explore.push(neighbor);
-				}
-			}
-		}
-	}
-	return Object.values(tiles).length;
-}
-
-function tileClosingSpaces(map: TileMap, tile: Tile): [Tile, Tile] | false {
-	tile.blocked = true;
-	// * First side
-	let aNeighbor: Position = [tile.x + directions[0][0], tile.y + directions[0][1]];
-	let bNeighbor: Position = [tile.x + directions[2][0], tile.y + directions[2][1]];
-	let cNeighbor: Position = [tile.x + directions[1][0], tile.y + directions[1][1]];
-	let dNeighbor: Position = [tile.x + directions[3][0], tile.y + directions[3][1]];
-	if (
-		(!exists(aNeighbor) || map[aNeighbor[0]][aNeighbor[1]].blocked) &&
-		(!exists(bNeighbor) || map[bNeighbor[0]][bNeighbor[1]].blocked) &&
-		exists(cNeighbor) &&
-		!map[cNeighbor[0]][cNeighbor[1]].blocked &&
-		exists(dNeighbor) &&
-		!map[dNeighbor[0]][dNeighbor[1]].blocked
-	) {
-		const cTile = map[cNeighbor[0]][cNeighbor[1]];
-		cTile.blocked = true;
-		const dTile = map[dNeighbor[0]][dNeighbor[1]];
-		dTile.blocked = true;
-		const reachable = !bfs(map, cTile, reachGoalCondition(dTile)) && (spaceSize(cTile) > 3 || spaceSize(dTile) > 3);
-		cTile.blocked = false;
-		dTile.blocked = false;
-		if (reachable) {
-			tile.blocked = false;
-			return [cTile, dTile];
-		}
-	}
-	// * Second side
-	if (
-		(!exists(cNeighbor) || map[cNeighbor[0]][cNeighbor[1]].blocked) &&
-		(!exists(dNeighbor) || map[dNeighbor[0]][dNeighbor[1]].blocked) &&
-		exists(aNeighbor) &&
-		!map[aNeighbor[0]][aNeighbor[1]].blocked &&
-		exists(bNeighbor) &&
-		!map[bNeighbor[0]][bNeighbor[1]].blocked
-	) {
-		const aTile = map[aNeighbor[0]][aNeighbor[1]];
-		aTile.blocked = true;
-		const bTile = map[bNeighbor[0]][bNeighbor[1]];
-		bTile.blocked = true;
-		const reachable = !bfs(map, aTile, reachGoalCondition(bTile)) && (spaceSize(aTile) > 3 || spaceSize(bTile) > 3);
-		aTile.blocked = false;
-		bTile.blocked = false;
-		if (reachable) {
-			tile.blocked = false;
-			return [map[aNeighbor[0]][aNeighbor[1]], map[bNeighbor[0]][bNeighbor[1]]];
-		}
-	}
-	tile.blocked = false;
-	return false;
-}
-
-function setSpaceAsClosed(tiles: [Tile, Tile], closedTiles: TileCloseMap) {
-	for (const side of tiles) {
-		let tiles: TileSet = {};
-		let explore: Tile[] = [side];
-		let isOwned = true;
-		while (explore.length > 0) {
-			const tile = explore.splice(0, 1)[0];
-			for (const neighbor of tile.neighbors()) {
-				if (neighbor.owner === Owner.Foe) {
-					isOwned = false;
-					break;
-				}
-				if (!neighbor.blocked) {
-					const neighborKey = key(neighbor);
-					if (!tiles[neighborKey]) {
-						tiles[neighborKey] = neighbor;
-						explore.push(neighbor);
-					}
-				}
-			}
-			if (!isOwned) {
-				break;
-			}
-		}
-		if (isOwned) {
-			for (const tile of Object.values<Tile>(tiles)) {
-				closedTiles[tile.x][tile.y] = true;
-				tile.closed = true;
-			}
-		}
-	}
 }
 
 function adjacentTilesSummary(map: TileMap, tile: Tile): CloseTileSummary {
@@ -655,9 +561,7 @@ const height: number = parseInt(inputs[1]);
 xLimit = height;
 
 // Calculate tileKeys
-const closedTiles: TileCloseMap = {};
 for (let i = 0; i < height; i++) {
-	closedTiles[i] = {};
 	tileKeys[i] = {};
 	for (let j = 0; j < width; j++) {
 		tileKeys[i][j] = Symbol();
@@ -706,7 +610,6 @@ while (true) {
 				blocked: scrapAmount === 0 || recycler,
 				movingUnits: 0,
 				hasAction: false,
-				closed: closedTiles[i][j] === true,
 				neighbors() {
 					const neighbors = [];
 					for (let d = 0; d < 4; d++) {
@@ -767,37 +670,23 @@ while (true) {
 		if (tile.hasAction) {
 			continue;
 		}
-		/*if (tile.canBuild) {
-			const spaceOpeningTiles = tileClosingSpaces(map, tile);
-			if (spaceOpeningTiles) {
-				action.push(`BUILD ${tile.y} ${tile.x}`);
-				// Mark all tiles inside this space as closed
-				tile.hasAction = true;
-				tile.recycler = true;
-				tile.blocked = true;
-				setSpaceAsClosed(spaceOpeningTiles, closedTiles);
-				continue;
-			}
-		}*/
-		if (myMatter > 10 && tile.canSpawn) {
+		if (tile.canSpawn || tile.canBuild) {
 			let underThreat = 0;
 			for (const neighbor of tile.neighbors()) {
 				if (neighbor.owner === Owner.Foe && neighbor.units > tile.units) {
-					underThreat = neighbor.units - tile.units;
+					underThreat = neighbor.units - tile.units + 1;
 					break;
 				}
 			}
-			if (underThreat > 0 && myMatter > underThreat * 10) {
+			if (underThreat > 3 && tile.canBuild) {
+				action.push(`BUILD ${tile.y} ${tile.x}`);
+				tile.hasAction = true;
+				tile.recycler = true;
+			} else if (underThreat > 0 && tile.canBuild && myMatter >= underThreat * 10) {
 				action.push(`SPAWN ${underThreat} ${tile.y} ${tile.x}`);
 				myMatter -= underThreat * 10;
 				tile.hasAction = true;
-			} else if (tile.units === 0) {
-				const summary = closeTileSummary(map, tile, 1);
-				if (summary.foeOrUnownedTiles >= 3) {
-					action.push(`SPAWN 1 ${tile.y} ${tile.x}`);
-					myMatter -= 10;
-					tile.hasAction = true;
-				}
+				tile.movingUnits += underThreat;
 			}
 		}
 	}
@@ -848,7 +737,7 @@ while (true) {
 			);
 			continue;
 		}
-		const vertical = furthestVerticalTile(map, unitTile);
+		/*const vertical = furthestVerticalTile(map, unitTile);
 		if (vertical) {
 			vertical.movingUnits += 1;
 			vertical.hasAction = true;
@@ -856,7 +745,7 @@ while (true) {
 				`MOVE ${Math.ceil(unitTile.units / 2)} ${unitTile.y} ${unitTile.x} ${vertical.y} ${vertical.x}`
 			);
 			continue;
-		}
+		}*/
 		const closestEnemyTile = bfs(map, unitTile, closestEnemyCondition);
 		if (closestEnemyTile) {
 			const destination = closestEnemyTile;
@@ -869,7 +758,7 @@ while (true) {
 		}
 	}
 	// ? Find the most profitable cells to spawn new robots on
-	if (myMatter >= 10) {
+	if (myMatter >= 20) {
 		const mostProfitable = mostProfitableSpawnTiles(map, ownedTiles);
 		for (const tile of mostProfitable) {
 			action.push(`SPAWN 1 ${tile.y} ${tile.x}`);
