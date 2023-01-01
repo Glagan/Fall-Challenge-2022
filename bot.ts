@@ -311,7 +311,7 @@ function closestAllyCondition(node: Tile) {
 }
 
 function unownedTileCondition(node: Tile) {
-	return node.owner !== Owner.Self && !node.hasAction;
+	return node.owner !== Owner.Self;
 }
 
 function unownedEmptyTileCondition(node: Tile) {
@@ -459,21 +459,21 @@ function closeTileSummary(map: TileMap, tile: Tile, range: number): CloseTileSum
 	return summary;
 }
 
-function mostProfitableRecyclerTile(map: TileMap, ownedTiles: Position[]): Tile | null {
-	let mostProfitableTile: Tile | null = null;
-	for (const ownedTile of ownedTiles) {
-		const tile = map[ownedTile[0]][ownedTile[1]];
-		if (!tile.canBuild || tile.hasAction) {
-			continue;
-		}
-		if (
-			tile.neighbors().every((n) => !n.blocked && n.scrapAmount > tile.scrapAmount) &&
-			(!mostProfitableTile || mostProfitableTile.scrapAmount < tile.scrapAmount)
-		) {
-			mostProfitableTile = tile;
-		}
-	}
-	return mostProfitableTile;
+function mostProfitableRecyclerTile(map: TileMap, ownedTiles: Position[]) {
+	return ownedTiles
+		.map((ownedTile) => {
+			const tile = map[ownedTile[0]][ownedTile[1]];
+			if (!tile.canBuild || tile.hasAction) {
+				return null;
+			}
+			const neighbors = tile.neighbors();
+			if (neighbors.every((n) => !n.blocked && n.scrapAmount > tile.scrapAmount)) {
+				return [tile, neighbors.length * 10 + tile.scrapAmount] as [Tile, number];
+			}
+			return null;
+		})
+		.filter((t) => t !== null)
+		.sort((a, b) => b![1] - a![1]) as [Tile, number][];
 }
 
 function adjacentTilesSummary(map: TileMap, tile: Tile): CloseTileSummary {
@@ -509,47 +509,23 @@ function adjacentTilesSummary(map: TileMap, tile: Tile): CloseTileSummary {
 	return summary;
 }
 
-function mostProfitableSpawnTiles(map: TileMap, ownedTiles: Position[]): Tile[] {
-	let tiles: [Tile, number][] = [];
-	for (const position of ownedTiles) {
-		const tile = map[position[0]][position[1]];
-		if (tile.blocked || tile.hasAction) {
-			continue;
-		}
-		const summary = adjacentTilesSummary(map, tile);
-		let score = summary.enemyTilesAmount * 15 + summary.unownedTiles * 10 - summary.selfRobotsAmount * 10;
-		if (score < 10) {
-			continue;
-		}
-		for (const angle of angles) {
-			const position: Position = [tile.x + angle[0], tile.y + angle[1]];
-			if (exists(position)) {
-				const angleTile = map[position[0]][position[1]];
-				if (angleTile.owner === Owner.Foe) {
-					score += 4;
-				} else if (angleTile.owner === Owner.Neutral) {
-					score += 2;
-				} else {
-					score -= angleTile.units;
-				}
-				if (angleTile.hasAction) {
-					score -= 10;
-				}
+function mostProfitableSpawnTiles(map: TileMap, ownedTiles: Position[]) {
+	return ownedTiles
+		.map((position) => {
+			const tile = map[position[0]][position[1]];
+			if (tile.blocked || tile.hasAction || tile.movingUnits > 0) {
+				return null;
 			}
-		}
-		let inserted = false;
-		for (let index = 0; index < tiles.length; index++) {
-			if (tiles[index][1] < score) {
-				inserted = true;
-				tiles.splice(index, 0, [tile, score]);
-				break;
-			}
-		}
-		if (!inserted) {
-			tiles.push([tile, score]);
-		}
-	}
-	return tiles.map(([tile, _]) => tile);
+			const summary = closeTileSummary(map, tile, 1);
+			const score =
+				summary.enemyTilesAmount * 20 +
+				summary.unownedTiles * 10 -
+				// summary.selfRobotsAmount * 10 -
+				summary.enemyRobotsAmount * 8;
+			return [tile, score] as [Tile, number];
+		})
+		.filter((t) => t !== null)
+		.sort((a, b) => b![1] - a![1]) as [Tile, number][];
 }
 
 // * Bot
@@ -607,7 +583,7 @@ while (true) {
 				canBuild,
 				canSpawn,
 				inRangeOfRecycler,
-				blocked: scrapAmount === 0 || recycler,
+				blocked: scrapAmount === 0 || recycler || (scrapAmount === 1 && inRangeOfRecycler),
 				movingUnits: 0,
 				hasAction: false,
 				neighbors() {
@@ -622,14 +598,14 @@ while (true) {
 				},
 			});
 			if (owner === Owner.Self) {
+				if (recycler) {
+					recyclers += 1;
+				}
 				ownedTiles.push([i, j]);
 			} else if (owner === Owner.Foe) {
 				foeTiles.push([i, j]);
 			} else {
 				freeTiles.push([i, j]);
-			}
-			if (recycler) {
-				recyclers += 1;
 			}
 			if (units > 0) {
 				if (owner === Owner.Self) {
@@ -667,53 +643,56 @@ while (true) {
 	// ? Defend tiles under threat or with a lot of free estate
 	for (const selfTilePosition of ownedTiles) {
 		const tile = map[selfTilePosition[0]][selfTilePosition[1]];
-		if (tile.hasAction) {
+		if (tile.hasAction || (!tile.canSpawn && !tile.canBuild)) {
 			continue;
 		}
-		if (tile.canSpawn || tile.canBuild) {
-			let underThreat = 0;
-			for (const neighbor of tile.neighbors()) {
-				if (neighbor.owner === Owner.Foe && neighbor.units > tile.units) {
-					underThreat = neighbor.units - tile.units + 1;
-					break;
-				}
+		let underThreat = 0;
+		for (const neighbor of tile.neighbors()) {
+			if (neighbor.owner === Owner.Foe && neighbor.units > tile.units) {
+				underThreat = neighbor.units - tile.units + 1;
+				break;
 			}
-			if (underThreat > 3 && tile.canBuild) {
-				action.push(`BUILD ${tile.y} ${tile.x}`);
-				tile.hasAction = true;
-				tile.recycler = true;
-			} else if (underThreat > 0 && tile.canBuild && myMatter >= underThreat * 10) {
-				action.push(`SPAWN ${underThreat} ${tile.y} ${tile.x}`);
-				myMatter -= underThreat * 10;
-				tile.hasAction = true;
-				tile.movingUnits += underThreat;
-			}
+		}
+		if (underThreat >= 3 && tile.canBuild) {
+			action.push(`BUILD ${tile.y} ${tile.x}`);
+			tile.hasAction = true;
+			tile.recycler = true;
+			myMatter -= 10;
+		} else if (underThreat > 0 && tile.canBuild && myMatter >= underThreat * 10) {
+			action.push(`SPAWN ${underThreat} ${tile.y} ${tile.x}`);
+			myMatter -= underThreat * 10;
+			tile.hasAction = true;
+			tile.movingUnits += underThreat;
 		}
 	}
 	// ? Farm resources
-	if (round > 2 && round < 15 && recyclers < 5) {
-		const tile = mostProfitableRecyclerTile(map, ownedTiles);
-		if (tile && tile.scrapAmount > 2) {
+	if (recyclers < 5) {
+		const tiles = mostProfitableRecyclerTile(map, ownedTiles);
+		if (tiles.length > 0 && tiles[0][0].scrapAmount > 3) {
+			const tile = tiles[0][0];
 			action.push(`BUILD ${tile.y} ${tile.x}`);
 			tile.hasAction = true;
 			tile.recycler = true;
 			tile.blocked = true;
+			myMatter -= 10;
 		}
 	}
-	// ? Close spaces
-	else if (round >= 15) {
+	// ? Close space
+	if (round >= 5) {
 		for (const selfTilePosition of ownedTiles) {
 			const tile = map[selfTilePosition[0]][selfTilePosition[1]];
-			if (tile.hasAction) {
+			if (tile.hasAction || !tile.canBuild) {
 				continue;
 			}
-			if (tile.canBuild) {
-				const summary = closeTileSummary(map, tile, 1);
-				if (summary.blocking && summary.selfTilesAmount < summary.enemyTilesAmount) {
-					tile.hasAction = true;
-					tile.recycler = true;
-					tile.blocked = true;
-					action.push(`BUILD ${tile.y} ${tile.x}`);
+			const summary = adjacentTilesSummary(map, tile);
+			if (summary.enemyTilesAmount > 0 && summary.selfTilesAmount < summary.enemyTilesAmount) {
+				tile.hasAction = true;
+				tile.recycler = true;
+				tile.blocked = true;
+				action.push(`BUILD ${tile.y} ${tile.x}`);
+				myMatter -= 10;
+				if (myMatter < 10) {
+					break;
 				}
 			}
 		}
@@ -725,34 +704,44 @@ while (true) {
 			continue;
 		}
 		// * Defend
-		// TODO Don't move if under threat
+		// Don't move if a tile can be defended
+		const underThreat = unitTile
+			.neighbors()
+			.reduce(
+				(acc, neighbor) => (neighbor.owner === Owner.Foe && neighbor.units > 0 ? acc + neighbor.units : acc),
+				0
+			);
+		if (underThreat > 0 && unitTile.units >= underThreat) {
+			unitTile.hasAction = true;
+			continue;
+		}
 		// * Move
-		const closestUnowned = bfs(map, unitTile, unownedTileCondition);
+		const closestUnowned = bfs(map, unitTile, unownedEmptyTileCondition);
 		if (closestUnowned) {
 			const destination = closestUnowned;
 			destination.movingUnits += 1;
 			destination.hasAction = true;
 			action.push(
-				`MOVE ${Math.ceil(unitTile.units / 2)} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`
+				`MOVE ${Math.ceil(unitTile.units * 0.8)} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`
 			);
 			continue;
 		}
-		/*const vertical = furthestVerticalTile(map, unitTile);
+		const vertical = furthestVerticalTile(map, unitTile);
 		if (vertical) {
 			vertical.movingUnits += 1;
 			vertical.hasAction = true;
 			action.push(
-				`MOVE ${Math.ceil(unitTile.units / 2)} ${unitTile.y} ${unitTile.x} ${vertical.y} ${vertical.x}`
+				`MOVE ${Math.ceil(unitTile.units * 0.8)} ${unitTile.y} ${unitTile.x} ${vertical.y} ${vertical.x}`
 			);
 			continue;
-		}*/
+		}
 		const closestEnemyTile = bfs(map, unitTile, closestEnemyCondition);
 		if (closestEnemyTile) {
 			const destination = closestEnemyTile;
 			destination.movingUnits += 1;
 			destination.hasAction = true;
 			action.push(
-				`MOVE ${Math.ceil(unitTile.units / 2)} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`
+				`MOVE ${Math.ceil(unitTile.units * 0.8)} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`
 			);
 			continue;
 		}
@@ -761,14 +750,17 @@ while (true) {
 	if (myMatter >= 20) {
 		const mostProfitable = mostProfitableSpawnTiles(map, ownedTiles);
 		for (const tile of mostProfitable) {
-			action.push(`SPAWN 1 ${tile.y} ${tile.x}`);
-			myMatter -= 10;
-			if (myMatter < 20) {
+			const summary = adjacentTilesSummary(map, tile[0]);
+			const toSpawn = Math.ceil(Math.max(10, Math.min(summary.enemyTilesAmount * 10, myMatter)) / 10);
+			action.push(`SPAWN ${toSpawn} ${tile[0].y} ${tile[0].x}`);
+			myMatter -= toSpawn * 10;
+			if (myMatter < 10) {
 				break;
 			}
 		}
 	}
 
+	// * Done
 	if (action.length > 0) {
 		console.log(`MESSAGE ${Date.now() - roundStart}ms;${action.join(";")}`);
 	} else {
