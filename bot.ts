@@ -193,9 +193,9 @@ function key(tile: { x: number; y: number }): symbol {
 }
 
 let directions = [
-	[-1, 0],
-	[0, -1],
 	[1, 0],
+	[0, -1],
+	[-1, 0],
 	[0, 1],
 ];
 
@@ -277,13 +277,18 @@ function aStar(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
 	return null;
 }
 
-function bfs(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
+function bfs(map: TileMap, start: Tile, goal: (start: Tile, target: Tile) => boolean) {
 	const explored: { [key: symbol]: boolean } = { [key(start)]: true };
-	const queue: Tile[] = [start];
+	const queue: Tile[] = [];
+	for (const neighborPosition of directions.map((d): Position => [start.x + d[0], start.y + d[1]])) {
+		if (exists(neighborPosition) && !map[neighborPosition[0]][neighborPosition[1]].blocked) {
+			queue.push(map[neighborPosition[0]][neighborPosition[1]]);
+		}
+	}
 
 	while (queue.length > 0) {
 		const node = queue.splice(0, 1)[0];
-		if (goal(node)) {
+		if (goal(start, node)) {
 			return node;
 		}
 		const neighborPositions = directions
@@ -302,20 +307,22 @@ function bfs(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
 	return null;
 }
 
-function closestEnemyCondition(node: Tile) {
-	return node.owner === Owner.Foe && !node.hasAction;
+function closestEnemyCondition(start: Tile, target: Tile) {
+	return (
+		target.owner === Owner.Foe && (target.owner !== Owner.Foe || start.units >= target.units) && !target.hasAction
+	);
 }
 
-function closestAllyCondition(node: Tile) {
-	return node.owner === Owner.Self;
+function closestAllyCondition(_: Tile, target: Tile) {
+	return target.owner === Owner.Self;
 }
 
-function unownedTileCondition(node: Tile) {
-	return node.owner !== Owner.Self;
+function unownedTileCondition(_: Tile, target: Tile) {
+	return target.owner !== Owner.Self;
 }
 
-function unownedEmptyTileCondition(node: Tile) {
-	return node.owner !== Owner.Self && node.movingUnits < 1;
+function unownedEmptyTileCondition(start: Tile, target: Tile) {
+	return target.owner !== Owner.Self && (target.owner !== Owner.Foe || start.units >= target.units);
 }
 
 function reachGoalCondition(goal: Tile) {
@@ -329,7 +336,7 @@ function reachGoalCondition(goal: Tile) {
 function furthestVerticalTile(map: TileMap, tile: Tile): Tile | null {
 	let furthestTile = null;
 	let length = 0;
-	let x = tile.x;
+	let x = tile.x - 1;
 	let offset = 0;
 	while (x > 0) {
 		if (!map[x][tile.y].blocked) {
@@ -339,7 +346,7 @@ function furthestVerticalTile(map: TileMap, tile: Tile): Tile | null {
 		x -= 1;
 		offset += 1;
 	}
-	x = tile.x;
+	x = tile.x + 1;
 	offset = 0;
 	while (x < map.length) {
 		if (!map[x][tile.y].blocked && offset > length) {
@@ -623,17 +630,17 @@ while (true) {
 			side = Side.Left;
 			directions = [
 				[0, 1],
-				[-1, 0],
-				[0, -1],
 				[1, 0],
+				[0, -1],
+				[-1, 0],
 			];
 		} else {
 			side = Side.Right;
 			directions = [
 				[0, -1],
-				[-1, 0],
-				[0, 1],
 				[1, 0],
+				[0, 1],
+				[-1, 0],
 			];
 		}
 	}
@@ -721,18 +728,22 @@ while (true) {
 			const destination = closestUnowned;
 			destination.movingUnits += 1;
 			destination.hasAction = true;
-			action.push(
-				`MOVE ${Math.ceil(unitTile.units * 0.8)} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`
-			);
+			let amount = Math.ceil(unitTile.units * 0.8);
+			if (destination.owner === Owner.Foe) {
+				amount = Math.min(unitTile.units, destination.units + 1);
+			}
+			action.push(`MOVE ${amount} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`);
 			continue;
 		}
 		const vertical = furthestVerticalTile(map, unitTile);
 		if (vertical) {
 			vertical.movingUnits += 1;
 			vertical.hasAction = true;
-			action.push(
-				`MOVE ${Math.ceil(unitTile.units * 0.8)} ${unitTile.y} ${unitTile.x} ${vertical.y} ${vertical.x}`
-			);
+			let amount = Math.ceil(unitTile.units * 0.8);
+			if (vertical.owner === Owner.Foe) {
+				amount = Math.min(unitTile.units, vertical.units + 1);
+			}
+			action.push(`MOVE ${amount} ${unitTile.y} ${unitTile.x} ${vertical.y} ${vertical.x}`);
 			continue;
 		}
 		const closestEnemyTile = bfs(map, unitTile, closestEnemyCondition);
@@ -740,9 +751,11 @@ while (true) {
 			const destination = closestEnemyTile;
 			destination.movingUnits += 1;
 			destination.hasAction = true;
-			action.push(
-				`MOVE ${Math.ceil(unitTile.units * 0.8)} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`
-			);
+			let amount = Math.ceil(unitTile.units * 0.8);
+			if (destination.owner === Owner.Foe) {
+				amount = Math.min(unitTile.units, destination.units + 1);
+			}
+			action.push(`MOVE ${amount} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`);
 			continue;
 		}
 	}
