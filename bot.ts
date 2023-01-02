@@ -1,141 +1,3 @@
-// * Dependencies
-
-class BinaryHeap {
-	content: Tile[];
-	scores: TileScoreSet;
-
-	constructor() {
-		this.content = [];
-		this.scores = {};
-	}
-
-	scoreFunction(tile: Tile) {
-		if (this.scores[key(tile)]) {
-			return this.scores[key(tile)];
-		}
-		return +Infinity;
-	}
-
-	push(element: Tile, score: number) {
-		// Add the new element to the end of the array.
-		this.content.push(element);
-		this.scores[key(element)] = score;
-
-		// Allow it to sink down.
-		this.sinkDown(this.content.length - 1);
-	}
-
-	pop() {
-		// Store the first element so we can return it later.
-		var result = this.content[0];
-		// Get the element at the end of the array.
-		var end = this.content.pop()!;
-		// If there are any elements left, put the end element at the
-		// start, and let it bubble up.
-		if (this.content.length > 0) {
-			this.content[0] = end;
-			this.bubbleUp(0);
-		}
-		return result;
-	}
-
-	remove(node: Tile) {
-		var i = this.content.indexOf(node);
-
-		// When it is found, the process seen in 'pop' is repeated
-		// to fill up the hole.
-		var end = this.content.pop()!;
-
-		if (i !== this.content.length - 1) {
-			this.content[i] = end;
-
-			if (this.scoreFunction(end) < this.scoreFunction(node)) {
-				this.sinkDown(i);
-			} else {
-				this.bubbleUp(i);
-			}
-		}
-	}
-
-	size() {
-		return this.content.length;
-	}
-
-	rescoreElement(node: Tile) {
-		this.sinkDown(this.content.indexOf(node));
-	}
-
-	sinkDown(n: number) {
-		// Fetch the element that has to be sunk.
-		var element = this.content[n];
-
-		// When at 0, an element can not sink any further.
-		while (n > 0) {
-			// Compute the parent element's index, and fetch it.
-			var parentN = ((n + 1) >> 1) - 1;
-			var parent = this.content[parentN];
-			// Swap the elements if the parent is greater.
-			if (this.scoreFunction(element) < this.scoreFunction(parent)) {
-				this.content[parentN] = element;
-				this.content[n] = parent;
-				// Update 'n' to continue at the new position.
-				n = parentN;
-			}
-			// Found a parent that is less, no need to sink any further.
-			else {
-				break;
-			}
-		}
-	}
-
-	bubbleUp(n: number) {
-		// Look up the target element and its score.
-		var length = this.content.length;
-		var element = this.content[n];
-		var elemScore = this.scoreFunction(element);
-
-		while (true) {
-			// Compute the indices of the child elements.
-			var child2N = (n + 1) << 1;
-			var child1N = child2N - 1;
-			// This is used to store the new position of the element, if any.
-			var swap = null;
-			var child1Score = Infinity;
-			// If the first child exists (is inside the array)...
-			if (child1N < length) {
-				// Look it up and compute its score.
-				var child1 = this.content[child1N];
-				child1Score = this.scoreFunction(child1);
-
-				// If the score is less than our element's, we need to swap.
-				if (child1Score < elemScore) {
-					swap = child1N;
-				}
-			}
-
-			// Do the same checks for the other child.
-			if (child2N < length) {
-				var child2 = this.content[child2N];
-				var child2Score = this.scoreFunction(child2);
-				if (child2Score < (swap === null ? elemScore : child1Score)) {
-					swap = child2N;
-				}
-			}
-
-			// If the element needs to be moved, swap it, and continue.
-			if (swap !== null) {
-				this.content[n] = this.content[swap];
-				this.content[swap] = element;
-				n = swap;
-			}
-			// Otherwise, we are done.
-			else {
-				break;
-			}
-		}
-	}
-}
-
 // * Global utility
 
 enum Owner {
@@ -160,6 +22,7 @@ type Tile = {
 	inRangeOfRecycler: boolean;
 	owner: Owner;
 	blocked: boolean;
+	willDestruct: boolean;
 	movingUnits: number;
 	hasAction: boolean;
 	neighbors: () => Tile[];
@@ -245,38 +108,6 @@ const blockingChecks = [
 	],
 ];
 
-function aStar(map: TileMap, start: Tile, goal: (tile: Tile) => boolean) {
-	const startKey = key(start);
-	const openSet = new BinaryHeap();
-	openSet.push(start, 0);
-	const cameFrom: TileSet = {};
-	const gScore: TileScoreSet = { [startKey]: 0 };
-
-	while (openSet.size() > 0) {
-		const node = openSet.pop();
-		const useKey = key(node);
-		if (goal(node)) {
-			return node;
-		}
-
-		const neighbors = directions
-			.map((d): Position => [node.x + d[0], node.y + d[1]])
-			.filter((p) => exists(p) && !map[p[0]][p[1]].blocked)
-			.map((p) => map[p[0]][p[1]]);
-		for (const neighbor of neighbors) {
-			const neighborKey = key(neighbor);
-			const score = gScore[useKey] + 1;
-			if (gScore[neighborKey] === undefined || score < gScore[neighborKey]) {
-				cameFrom[neighborKey] = node;
-				gScore[neighborKey] = score;
-				openSet.push(neighbor, score + 1);
-			}
-		}
-	}
-
-	return null;
-}
-
 function bfs(map: TileMap, start: Tile, goal: (start: Tile, target: Tile) => boolean) {
 	const explored: { [key: symbol]: boolean } = { [key(start)]: true };
 	const queue: Tile[] = [];
@@ -307,22 +138,14 @@ function bfs(map: TileMap, start: Tile, goal: (start: Tile, target: Tile) => boo
 	return null;
 }
 
-function closestEnemyCondition(start: Tile, target: Tile) {
+function unownedTileCondition(start: Tile, target: Tile) {
 	return (
-		target.owner === Owner.Foe && (target.owner !== Owner.Foe || start.units >= target.units) && !target.hasAction
+		target.owner !== Owner.Self &&
+		(target.owner !== Owner.Foe || start.units > target.units) &&
+		!target.willDestruct &&
+		!target.hasAction &&
+		target.movingUnits === 0
 	);
-}
-
-function closestAllyCondition(_: Tile, target: Tile) {
-	return target.owner === Owner.Self;
-}
-
-function unownedTileCondition(_: Tile, target: Tile) {
-	return target.owner !== Owner.Self;
-}
-
-function unownedEmptyTileCondition(start: Tile, target: Tile) {
-	return target.owner !== Owner.Self && (target.owner !== Owner.Foe || start.units >= target.units);
 }
 
 function reachGoalCondition(goal: Tile) {
@@ -332,32 +155,6 @@ function reachGoalCondition(goal: Tile) {
 }
 
 // * Map utility
-
-function furthestVerticalTile(map: TileMap, tile: Tile): Tile | null {
-	let furthestTile = null;
-	let length = 0;
-	let x = tile.x - 1;
-	let offset = 0;
-	while (x > 0) {
-		if (!map[x][tile.y].blocked) {
-			furthestTile = map[x][tile.y];
-			length = offset;
-		}
-		x -= 1;
-		offset += 1;
-	}
-	x = tile.x + 1;
-	offset = 0;
-	while (x < map.length) {
-		if (!map[x][tile.y].blocked && offset > length) {
-			furthestTile = map[x][tile.y];
-			length = offset;
-		}
-		x += 1;
-		offset += 1;
-	}
-	return furthestTile;
-}
 
 function adjacentMovableTiles(map: TileMap, tile: Tile) {
 	let tiles = [];
@@ -516,15 +313,83 @@ function adjacentTilesSummary(map: TileMap, tile: Tile): CloseTileSummary {
 	return summary;
 }
 
+function tileMoveReach(map: TileMap, tile: Tile, condition: (start: Tile, target: Tile) => boolean, depth: number) {
+	const explored: { [key: symbol]: boolean } = { [key(tile)]: true };
+	const queue: [tile: Tile, depth: number][] = [[tile, 0]];
+	let reachable = 0;
+	while (queue.length > 0) {
+		const node = queue.splice(0, 1)[0];
+		if (node[1] >= depth) {
+			continue;
+		}
+		const neighborPositions = directions
+			.map((d): Position => [node[0].x + d[0], node[0].y + d[1]])
+			.filter((p) => exists(p) && !map[p[0]][p[1]].blocked);
+		for (const [x, y] of neighborPositions) {
+			const neighbor = map[x][y];
+			if (condition(tile, neighbor)) {
+				reachable += 1;
+			}
+			const neighborKey = key(neighbor);
+			if (!explored[neighborKey]) {
+				explored[neighborKey] = true;
+				queue.push([neighbor, node[1] + 1]);
+			}
+		}
+	}
+	return reachable;
+}
+
+function tileNeighborsMoveReach(
+	map: TileMap,
+	tile: Tile,
+	condition: (start: Tile, target: Tile) => boolean,
+	depth: number
+) {
+	const neighbors: [Tile, number][] = [];
+	for (const neighborPosition of directions.map((d): Position => [tile.x + d[0], tile.y + d[1]])) {
+		if (exists(neighborPosition) && !map[neighborPosition[0]][neighborPosition[1]].blocked) {
+			const neighbor = map[neighborPosition[0]][neighborPosition[1]];
+			const explored: { [key: symbol]: boolean } = { [key(tile)]: true, [key(neighbor)]: true };
+			const queue: [tile: Tile, depth: number][] = [[neighbor, 0]];
+			let reachable = condition(tile, neighbor) ? 2 : 0;
+			while (queue.length > 0) {
+				const node = queue.splice(0, 1)[0];
+				if (node[1] >= depth) {
+					continue;
+				}
+				const neighborPositions = directions
+					.map((d): Position => [node[0].x + d[0], node[0].y + d[1]])
+					.filter((p) => exists(p) && !map[p[0]][p[1]].blocked);
+				for (const [x, y] of neighborPositions) {
+					const neighbor = map[x][y];
+					if (condition(tile, neighbor)) {
+						reachable += 1;
+					}
+					const neighborKey = key(neighbor);
+					if (!explored[neighborKey]) {
+						explored[neighborKey] = true;
+						queue.push([neighbor, node[1] + 1]);
+					}
+				}
+			}
+			neighbors.push([neighbor, reachable] as [Tile, number]);
+		}
+	}
+	return neighbors;
+}
+
 function mostProfitableSpawnTiles(map: TileMap, ownedTiles: Position[]) {
 	return ownedTiles
 		.map((position) => {
 			const tile = map[position[0]][position[1]];
-			if (tile.blocked || tile.hasAction || tile.movingUnits > 0) {
+			if (tile.blocked || tile.recycler) {
 				return null;
 			}
+			const reach = tileMoveReach(map, tile, unownedTileCondition, 2);
 			const summary = closeTileSummary(map, tile, 1);
 			const score =
+				reach * 2 +
 				summary.enemyTilesAmount * 20 +
 				summary.unownedTiles * 10 -
 				// summary.selfRobotsAmount * 10 -
@@ -542,6 +407,7 @@ const width: number = parseInt(inputs[0]);
 yLimit = width;
 const height: number = parseInt(inputs[1]);
 xLimit = height;
+const moveDepth = width < 15 ? 2 : 6;
 
 // Calculate tileKeys
 for (let i = 0; i < height; i++) {
@@ -580,6 +446,7 @@ while (true) {
 			const canBuild = parseInt(inputs[4]) > 0;
 			const canSpawn = parseInt(inputs[5]) > 0;
 			const inRangeOfRecycler = parseInt(inputs[6]) > 0;
+			const willDestruct = inRangeOfRecycler && scrapAmount === 1;
 			row.push({
 				x: i,
 				y: j,
@@ -590,7 +457,8 @@ while (true) {
 				canBuild,
 				canSpawn,
 				inRangeOfRecycler,
-				blocked: scrapAmount === 0 || recycler || (scrapAmount === 1 && inRangeOfRecycler),
+				blocked: scrapAmount === 0 || recycler || willDestruct,
+				willDestruct,
 				movingUnits: 0,
 				hasAction: false,
 				neighbors() {
@@ -712,7 +580,7 @@ while (true) {
 		}
 		// * Defend
 		// Don't move if a tile can be defended
-		const underThreat = unitTile
+		/*const underThreat = unitTile
 			.neighbors()
 			.reduce(
 				(acc, neighbor) => (neighbor.owner === Owner.Foe && neighbor.units > 0 ? acc + neighbor.units : acc),
@@ -721,42 +589,20 @@ while (true) {
 		if (underThreat > 0 && unitTile.units >= underThreat) {
 			unitTile.hasAction = true;
 			continue;
-		}
+		}*/
 		// * Move
-		const closestUnowned = bfs(map, unitTile, unownedEmptyTileCondition);
-		if (closestUnowned) {
-			const destination = closestUnowned;
-			destination.movingUnits += 1;
+		const neighborsReach = tileNeighborsMoveReach(map, unitTile, unownedTileCondition, 2).sort(
+			(a, b) => b[1] - a[1]
+		);
+		if (neighborsReach.length > 0) {
+			const destination = neighborsReach[0][0];
 			destination.hasAction = true;
 			let amount = Math.ceil(unitTile.units * 0.8);
 			if (destination.owner === Owner.Foe) {
 				amount = Math.min(unitTile.units, destination.units + 1);
 			}
+			destination.movingUnits += amount;
 			action.push(`MOVE ${amount} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`);
-			continue;
-		}
-		const vertical = furthestVerticalTile(map, unitTile);
-		if (vertical) {
-			vertical.movingUnits += 1;
-			vertical.hasAction = true;
-			let amount = Math.ceil(unitTile.units * 0.8);
-			if (vertical.owner === Owner.Foe) {
-				amount = Math.min(unitTile.units, vertical.units + 1);
-			}
-			action.push(`MOVE ${amount} ${unitTile.y} ${unitTile.x} ${vertical.y} ${vertical.x}`);
-			continue;
-		}
-		const closestEnemyTile = bfs(map, unitTile, closestEnemyCondition);
-		if (closestEnemyTile) {
-			const destination = closestEnemyTile;
-			destination.movingUnits += 1;
-			destination.hasAction = true;
-			let amount = Math.ceil(unitTile.units * 0.8);
-			if (destination.owner === Owner.Foe) {
-				amount = Math.min(unitTile.units, destination.units + 1);
-			}
-			action.push(`MOVE ${amount} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`);
-			continue;
 		}
 	}
 	// ? Find the most profitable cells to spawn new robots on
