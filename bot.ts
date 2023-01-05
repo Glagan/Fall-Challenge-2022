@@ -2,7 +2,7 @@
 
 enum Owner {
 	Neutral = -1,
-	Foe = 0,
+	Opponent = 0,
 	Self = 1,
 }
 
@@ -11,7 +11,7 @@ enum Side {
 	Right,
 }
 
-type Tile = {
+type Cell = {
 	x: number;
 	y: number;
 	scrapAmount: number;
@@ -19,118 +19,139 @@ type Tile = {
 	recycler: boolean;
 	canBuild: boolean;
 	canSpawn: boolean;
+	canMove: boolean;
 	inRangeOfRecycler: boolean;
 	owner: Owner;
-	blocked: boolean;
 	willDestruct: boolean;
 	movingUnits: number;
 	hasAction: boolean;
-	neighbors: () => Tile[];
+	neighbors: Cell[];
+	buildRecycler(): string;
+	spawn(amount: number): string;
+	move(cell: Cell, amount: number): string;
+	_closestEnemy: ScoredCell | null;
+	closestEnemy(): ScoredCell | null;
+	_closestEmptyCell: ScoredCell | null;
+	closestEmptyCell(): ScoredCell | null;
+	_threat: number | null;
+	threat(): number;
+	_support: number | null;
+	support(): number;
+	_attackPower: number | null;
+	attackPower(): number;
+	_isBlocking: boolean | null;
+	isBlocking(): boolean;
+	_reach: { [key: symbol]: { [key: symbol]: number } };
+	reach(ignore: Cell, maxDepth: number): number;
+	distanceTo(cell: Cell): number;
 };
-type TileMap = Tile[][];
-type TileSet = { [key: symbol]: Tile };
-type TileScoreSet = { [key: symbol]: number };
-type Position = [number, number];
-type TileCloseMap = { [key: number]: { [key: number]: boolean } };
+type ScoredCell = {
+	cell: Cell;
+	score: number;
+};
+type CellSet = { [key: symbol]: Cell };
+type CellHashSet = { [key: symbol]: true };
+type Position = { x: number; y: number };
 
-type CloseTileSummary = {
+type CloseCellSummary = {
 	enemyRobotsAmount: number;
 	selfRobotsAmount: number;
-	enemyTilesAmount: number;
-	selfTilesAmount: number;
-	unownedTiles: number;
-	foeOrUnownedTiles: number;
+	enemyCellsAmount: number;
+	selfCellsAmount: number;
+	unownedCells: number;
+	foeOrUnownedCells: number;
 	blocking: boolean;
 };
 
-const tileKeys: { [key: number]: { [key: number]: symbol } } = {};
-let xLimit = 0;
-let yLimit = 0;
-
-function exists(position: Position) {
-	return position[0] >= 0 && position[1] >= 0 && position[0] < xLimit && position[1] < yLimit;
-}
-
-function key(tile: { x: number; y: number }): symbol {
-	return tileKeys[tile.x][tile.y];
-}
+const cellKeys: { [key: number]: { [key: number]: symbol } } = {};
+const cellNeighbors: { [key: symbol]: Position[] } = {};
+let width = 0;
+let height = 0;
 
 let directions = [
-	[1, 0],
-	[0, -1],
-	[-1, 0],
-	[0, 1],
-];
-
-const angles = [
-	[-1, -1],
-	[1, -1],
-	[-1, 1],
-	[1, 1],
+	{ x: 0, y: -1 },
+	{ x: 0, y: 1 },
+	{ x: -1, y: 0 },
+	{ x: 1, y: 0 },
 ];
 
 const blockingChecks = [
-	[
-		[-1, -1],
-		[1, -1],
-	],
-	[
-		[-1, -1],
-		[1, 0],
-	],
-	[
-		[-1, -1],
-		[1, 1],
-	],
-	[
-		[-1, 0],
-		[1, -1],
-	],
-	[
-		[-1, 0],
-		[1, 0],
-	],
-	[
-		[-1, 0],
-		[1, 1],
-	],
-	[
-		[-1, 1],
-		[1, -1],
-	],
-	[
-		[-1, 1],
-		[1, 0],
-	],
-	[
-		[-1, 1],
-		[1, 1],
-	],
+	// Left/Right
+	{ open: [1, 6], closed: [[3, 4]] },
+	// Up/Down
+	{ open: [3, 4], closed: [[1, 6]] },
+	// Angles
+	{ open: [0, 6], closed: [[3, 4]] },
+	{
+		open: [0, 7],
+		closed: [
+			[1, 6],
+			[3, 4],
+		],
+	},
+	{ open: [1, 7], closed: [[3, 4]] },
+	{
+		open: [2, 5],
+		closed: [
+			[1, 6],
+			[3, 4],
+		],
+	},
+	{ open: [2, 6], closed: [[3, 4]] },
+	{
+		open: [2, 7],
+		closed: [
+			[1, 6],
+			[3, 4],
+		],
+	},
 ];
 
-function bfs(map: TileMap, start: Tile, goal: (start: Tile, target: Tile) => boolean) {
-	const explored: { [key: symbol]: boolean } = { [key(start)]: true };
-	const queue: Tile[] = [];
-	for (const neighborPosition of directions.map((d): Position => [start.x + d[0], start.y + d[1]])) {
-		if (exists(neighborPosition) && !map[neighborPosition[0]][neighborPosition[1]].blocked) {
-			queue.push(map[neighborPosition[0]][neighborPosition[1]]);
-		}
-	}
+function exists(position: Position) {
+	return position.x >= 0 && position.y >= 0 && position.x < width && position.y < height;
+}
+
+function ownedMovableCell(_: Cell, cell: Cell) {
+	return cell.owner === Owner.Self && !cell.recycler && cell.canMove;
+}
+
+function unownedCell(_: Cell, cell: Cell) {
+	return cell.owner !== Owner.Self && cell.movingUnits === 0 && cell.canMove && !cell.recycler;
+}
+
+function ownedAvailableRobot(_: Cell, cell: Cell) {
+	return cell.owner === Owner.Self && cell.units > 0 && !cell.hasAction;
+}
+
+function ownedSpawnable(_: Cell, cell: Cell) {
+	return cell.owner === Owner.Self && cell.canSpawn;
+}
+
+function enemyCell(_: Cell, cell: Cell) {
+	return (
+		cell.owner === Owner.Opponent &&
+		cell.canMove &&
+		!cell.recycler &&
+		(cell.movingUnits === 0 || cell.movingUnits < cell.units)
+	);
+}
+
+function dfs(start: Cell, goal: (start: Cell, target: Cell) => boolean) {
+	const explored: { [key: symbol]: boolean } = { [cellKeys[start.y][start.x]]: true };
+	const queue: ScoredCell[] = start.neighbors
+		.filter((neighbor) => neighbor.canMove)
+		.map((neighbor) => ({ cell: neighbor, score: 1 }));
 
 	while (queue.length > 0) {
 		const node = queue.splice(0, 1)[0];
-		if (goal(start, node)) {
+		if (goal(start, node.cell)) {
 			return node;
 		}
-		const neighborPositions = directions
-			.map((d): Position => [node.x + d[0], node.y + d[1]])
-			.filter((p) => exists(p) && !map[p[0]][p[1]].blocked);
-		for (const [x, y] of neighborPositions) {
-			const neighbor = map[x][y];
-			const neighborKey = key(neighbor);
-			if (!explored[neighborKey]) {
-				explored[neighborKey] = true;
-				queue.push(neighbor);
+		const neighbors = node.cell.neighbors.filter((neighbor) => neighbor.canMove);
+		for (const neighbor of neighbors) {
+			if (!explored[cellKeys[neighbor.y][neighbor.x]]) {
+				explored[cellKeys[neighbor.y][neighbor.x]] = true;
+				queue.push({ cell: neighbor, score: node.score + 1 });
 			}
 		}
 	}
@@ -138,492 +159,684 @@ function bfs(map: TileMap, start: Tile, goal: (start: Tile, target: Tile) => boo
 	return null;
 }
 
-function unownedTileCondition(start: Tile, target: Tile) {
-	return (
-		target.owner !== Owner.Self &&
-		(target.owner !== Owner.Foe || start.units > target.units) &&
-		!target.willDestruct &&
-		!target.hasAction &&
-		target.movingUnits === 0
-	);
+function prioritizeSpreadToCell(destination: Cell) {
+	return function (a: Cell, b: Cell) {
+		// Prioritize unowned cells
+		if (a.owner !== Owner.Self && b.owner === Owner.Self) {
+			return -1;
+		} else if (b.owner !== Owner.Self && a.owner === Owner.Self) {
+			return 1;
+		}
+		// And then by distance to the destination
+		const aDistance = a.distanceTo(destination);
+		const bDistance = b.distanceTo(destination);
+		if (aDistance < bDistance) {
+			return -1;
+		} else if (bDistance < aDistance) {
+			return 1;
+		}
+		return 0;
+	};
 }
 
-function reachGoalCondition(goal: Tile) {
-	return (node: Tile) => {
-		return node.x === goal.x && node.y === goal.y;
+function prioritizeExploration(ignore: Cell) {
+	return function (a: Cell, b: Cell) {
+		// -- and then prioritize the closest enemy cells
+		if (a.closestEmptyCell() && b.closestEmptyCell()) {
+			let aEnemy = a.closestEmptyCell()!.score;
+			let bEnemy = b.closestEmptyCell()!.score;
+			if (aEnemy < bEnemy) {
+				return -1;
+			} else if (bEnemy < aEnemy) {
+				return 1;
+			}
+		} else if (a.closestEmptyCell()) {
+			return -1;
+		} else if (b.closestEmptyCell()) {
+			return 1;
+		}
+		// Prioritize cells with the biggest reach
+		const aReach = a.reach(ignore, 4);
+		const bReach = b.reach(ignore, 4);
+		if (aReach > bReach) {
+			return -1;
+		} else if (bReach > aReach) {
+			return 1;
+		}
+		return 0;
 	};
+}
+
+function prioritizeOpponent(a: Cell, b: Cell) {
+	// Prioritize opponent cells
+	if (a.owner !== Owner.Self && b.owner === Owner.Self) {
+		return -1;
+	} else if (b.owner !== Owner.Self && a.owner === Owner.Self) {
+		return 1;
+	}
+	// Prioritize the closest empty cell
+	const aThreat = a.threat();
+	const bThreat = b.threat();
+	if (bThreat < aThreat) {
+		return -1;
+	} else if (aThreat < bThreat) {
+		return 1;
+	}
+	// Prioritize the closest enemy cells
+	if (a.closestEnemy() && b.closestEnemy()) {
+		let aEnemy = a.closestEnemy()!.score;
+		let bEnemy = b.closestEnemy()!.score;
+		if (aEnemy < bEnemy) {
+			return -1;
+		} else if (bEnemy < aEnemy) {
+			return 1;
+		}
+	} else if (a.closestEnemy()) {
+		return -1;
+	} else if (b.closestEnemy()) {
+		return 1;
+	}
+	// Prioritize by amount of units
+	if (a.owner === Owner.Opponent && b.owner === Owner.Opponent) {
+		return a.units - b.units;
+	}
+	return 0;
+}
+
+function prioritizeFilling(a: Cell, b: Cell) {
+	// Prioritize the closest empty cell
+	if (a.closestEmptyCell() && b.closestEmptyCell()) {
+		let aEmpty = a.closestEmptyCell()!.score;
+		let bEmpty = b.closestEmptyCell()!.score;
+		if (aEmpty < bEmpty) {
+			return -1;
+		} else if (bEmpty < aEmpty) {
+			return 1;
+		}
+	} else if (a.closestEmptyCell()) {
+		return -1;
+	} else if (b.closestEmptyCell()) {
+		return 1;
+	}
+	return 0;
 }
 
 // * Map utility
 
-function adjacentMovableTiles(map: TileMap, tile: Tile) {
-	let tiles = [];
-	for (const direction of directions) {
-		const position: Position = [tile.x + direction[0], tile.y + direction[1]];
-		if (exists(position)) {
-			const neighborTile = map[position[0]][position[1]];
-			if (!neighborTile.blocked && neighborTile.owner !== Owner.Self) {
-				tiles.push(map[position[0]][position[1]]);
-			}
-		}
-	}
-	return tiles;
-}
-
-const leftCheck = [
-	[-1, -1],
-	[0, -1],
-	[1, -1],
-];
-const rightCheck = [
-	[-1, 1],
-	[0, 1],
-	[1, 1],
-];
-function tileIsBlocking(map: TileMap, tile: Tile, against: Position) {
-	if (against[0] < tile.x) {
-		for (let i = -1; i <= 1; i++) {
-			const position: Position = [tile.x + 1, tile.y + i];
-			if (!exists(position) || map[position[0]][position[1]].blocked) {
-				return true;
-			}
-		}
-	} else if (against[0] === tile.x) {
-		if (against[1] < tile.y) {
-			for (let i = 0; i < 3; i++) {
-				const position: Position = [tile.x + rightCheck[i][0], tile.y + rightCheck[i][1]];
-				if (!exists(position) || map[position[0]][position[1]].blocked) {
-					return true;
-				}
-			}
-		} else {
-			for (let i = 0; i < 3; i++) {
-				const position: Position = [tile.x + leftCheck[i][0], tile.y + leftCheck[i][1]];
-				if (!exists(position) || map[position[0]][position[1]].blocked) {
-					return true;
-				}
-			}
-		}
-	} else {
-		for (let i = -1; i <= 1; i++) {
-			const position: Position = [tile.x - 1, tile.y + i];
-			if (!exists(position) || map[position[0]][position[1]].blocked) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-function closeTileSummary(map: TileMap, tile: Tile, range: number): CloseTileSummary {
-	const summary: CloseTileSummary = {
-		selfRobotsAmount: 0,
-		enemyRobotsAmount: 0,
-		selfTilesAmount: 0,
-		enemyTilesAmount: 0,
-		unownedTiles: 0,
-		foeOrUnownedTiles: 0,
-		blocking: false,
-	};
-	for (let i = tile.x - range; i <= tile.x + range; i++) {
-		if (i < 0 || i > xLimit - 1) {
+function mostProfitableRecyclerCells(ownedCells: Cell[]) {
+	const cells: ScoredCell[] = [];
+	for (const cell of ownedCells) {
+		if (
+			!cell.canBuild ||
+			cell.movingUnits > 0 ||
+			cell.inRangeOfRecycler ||
+			cell.scrapAmount < 3 ||
+			cell.closestEmptyCell() === null
+		) {
 			continue;
 		}
-		for (let j = tile.y - range; j <= tile.y + range; j++) {
-			if (j < 0 || j > yLimit - 1) {
-				continue;
+		let score = 0;
+		for (const neighbor of cell.neighbors) {
+			if (
+				!neighbor.inRangeOfRecycler &&
+				!neighbor.recycler &&
+				(neighbor.scrapAmount > cell.scrapAmount || neighbor.owner === Owner.Opponent)
+			) {
+				score += 10;
 			}
-			const closeTile = map[i][j];
-			if (closeTile.blocked) {
-				summary.blocking = summary.blocking || tileIsBlocking(map, tile, [i, j]);
-				continue;
-			}
-			if (closeTile.owner === Owner.Self) {
-				summary.selfRobotsAmount += closeTile.units;
-				summary.selfTilesAmount += 1;
-			} else if (closeTile.owner === Owner.Foe) {
-				summary.enemyRobotsAmount += closeTile.units;
-				summary.enemyTilesAmount += 1;
-				summary.foeOrUnownedTiles += 1;
-			} else {
-				summary.unownedTiles += 1;
-			}
+		}
+		// Filter cells that don't have at least 3 neighbors that will survive
+		// -- or belongs to the opponent
+		if (score >= 30) {
+			cells.push({ cell, score });
 		}
 	}
-	summary.blocking =
-		summary.blocking &&
-		((exists([tile.x - 1, tile.y]) &&
-			exists([tile.x + 1, tile.y]) &&
-			!map[tile.x - 1][tile.y].blocked &&
-			!map[tile.x + 1][tile.y].blocked) ||
-			(exists([tile.x, tile.y - 1]) &&
-				exists([tile.x, tile.y + 1]) &&
-				!map[tile.x][tile.y - 1].blocked &&
-				!map[tile.x][tile.y + 1].blocked));
-	return summary;
-}
-
-function mostProfitableRecyclerTile(map: TileMap, ownedTiles: Position[]) {
-	return ownedTiles
-		.map((ownedTile) => {
-			const tile = map[ownedTile[0]][ownedTile[1]];
-			if (!tile.canBuild || tile.hasAction) {
-				return null;
-			}
-			const neighbors = tile.neighbors();
-			if (neighbors.every((n) => !n.blocked && n.scrapAmount > tile.scrapAmount)) {
-				return [tile, neighbors.length * 10 + tile.scrapAmount] as [Tile, number];
-			}
-			return null;
-		})
-		.filter((t) => t !== null)
-		.sort((a, b) => b![1] - a![1]) as [Tile, number][];
-}
-
-function adjacentTilesSummary(map: TileMap, tile: Tile): CloseTileSummary {
-	const summary: CloseTileSummary = {
-		selfRobotsAmount: 0,
-		enemyRobotsAmount: 0,
-		selfTilesAmount: 0,
-		enemyTilesAmount: 0,
-		unownedTiles: 0,
-		foeOrUnownedTiles: 0,
-		blocking:
-			((!exists([tile.x - 1, tile.y]) || map[tile.x - 1][tile.y].blocked) &&
-				(!exists([tile.x + 1, tile.y]) || map[tile.x + 1][tile.y].blocked)) ||
-			((!exists([tile.x, tile.y - 1]) || map[tile.x][tile.y - 1].blocked) &&
-				(!exists([tile.x, tile.y + 1]) || map[tile.x][tile.y + 1].blocked)),
-	};
-	const tiles = adjacentMovableTiles(map, tile);
-	for (const tile of tiles) {
-		if (tile.blocked) {
-			continue;
-		}
-		if (tile.owner === Owner.Self) {
-			summary.selfRobotsAmount += tile.units;
-			summary.selfTilesAmount += 1;
-		} else if (tile.owner === Owner.Foe) {
-			summary.enemyRobotsAmount += tile.units;
-			summary.enemyTilesAmount += 1;
-			summary.foeOrUnownedTiles += 1;
-		} else {
-			summary.unownedTiles += 1;
-		}
-	}
-	return summary;
-}
-
-function tileMoveReach(map: TileMap, tile: Tile, condition: (start: Tile, target: Tile) => boolean, depth: number) {
-	const explored: { [key: symbol]: boolean } = { [key(tile)]: true };
-	const queue: [tile: Tile, depth: number][] = [[tile, 0]];
-	let reachable = 0;
-	while (queue.length > 0) {
-		const node = queue.splice(0, 1)[0];
-		if (node[1] >= depth) {
-			continue;
-		}
-		const neighborPositions = directions
-			.map((d): Position => [node[0].x + d[0], node[0].y + d[1]])
-			.filter((p) => exists(p) && !map[p[0]][p[1]].blocked);
-		for (const [x, y] of neighborPositions) {
-			const neighbor = map[x][y];
-			if (condition(tile, neighbor)) {
-				reachable += 1;
-			}
-			const neighborKey = key(neighbor);
-			if (!explored[neighborKey]) {
-				explored[neighborKey] = true;
-				queue.push([neighbor, node[1] + 1]);
-			}
-		}
-	}
-	return reachable;
-}
-
-function tileNeighborsMoveReach(
-	map: TileMap,
-	tile: Tile,
-	condition: (start: Tile, target: Tile) => boolean,
-	depth: number
-) {
-	const neighbors: [Tile, number][] = [];
-	for (const neighborPosition of directions.map((d): Position => [tile.x + d[0], tile.y + d[1]])) {
-		if (exists(neighborPosition) && !map[neighborPosition[0]][neighborPosition[1]].blocked) {
-			const neighbor = map[neighborPosition[0]][neighborPosition[1]];
-			const explored: { [key: symbol]: boolean } = { [key(tile)]: true, [key(neighbor)]: true };
-			const queue: [tile: Tile, depth: number][] = [[neighbor, 0]];
-			let reachable = condition(tile, neighbor) ? 2 : 0;
-			while (queue.length > 0) {
-				const node = queue.splice(0, 1)[0];
-				if (node[1] >= depth) {
-					continue;
-				}
-				const neighborPositions = directions
-					.map((d): Position => [node[0].x + d[0], node[0].y + d[1]])
-					.filter((p) => exists(p) && !map[p[0]][p[1]].blocked);
-				for (const [x, y] of neighborPositions) {
-					const neighbor = map[x][y];
-					if (condition(tile, neighbor)) {
-						reachable += 1;
-					}
-					const neighborKey = key(neighbor);
-					if (!explored[neighborKey]) {
-						explored[neighborKey] = true;
-						queue.push([neighbor, node[1] + 1]);
-					}
-				}
-			}
-			neighbors.push([neighbor, reachable] as [Tile, number]);
-		}
-	}
-	return neighbors;
-}
-
-function mostProfitableSpawnTiles(map: TileMap, ownedTiles: Position[]) {
-	return ownedTiles
-		.map((position) => {
-			const tile = map[position[0]][position[1]];
-			if (tile.blocked || tile.recycler) {
-				return null;
-			}
-			const reach = tileMoveReach(map, tile, unownedTileCondition, 2);
-			const summary = closeTileSummary(map, tile, 1);
-			const score =
-				reach * 2 +
-				summary.enemyTilesAmount * 20 +
-				summary.unownedTiles * 10 -
-				// summary.selfRobotsAmount * 10 -
-				summary.enemyRobotsAmount * 8;
-			return [tile, score] as [Tile, number];
-		})
-		.filter((t) => t !== null)
-		.sort((a, b) => b![1] - a![1]) as [Tile, number][];
+	return cells.sort((a, b) => b!.score - a!.score);
 }
 
 // * Bot
 
 const inputs: string[] = readline().split(" ");
-const width: number = parseInt(inputs[0]);
-yLimit = width;
-const height: number = parseInt(inputs[1]);
-xLimit = height;
-const moveDepth = width < 15 ? 2 : 6;
+width = parseInt(inputs[0]);
+height = parseInt(inputs[1]);
+const map: CellSet = {};
+const exploreSpawnLimit = Math.floor(height * 0.8);
 
-// Calculate tileKeys
-for (let i = 0; i < height; i++) {
-	tileKeys[i] = {};
-	for (let j = 0; j < width; j++) {
-		tileKeys[i][j] = Symbol();
+// Calculate cellKeys
+for (let y = 0; y < height; y++) {
+	cellKeys[y] = {};
+	for (let x = 0; x < width; x++) {
+		const key = Symbol();
+		map[key] = {
+			x,
+			y,
+			scrapAmount: 0,
+			owner: Owner.Neutral,
+			units: 0,
+			recycler: false,
+			canBuild: true,
+			canSpawn: true,
+			canMove: true,
+			inRangeOfRecycler: true,
+			willDestruct: true,
+			movingUnits: 0,
+			hasAction: false,
+			neighbors: [],
+			buildRecycler() {
+				this.canBuild = false;
+				this.canSpawn = false;
+				this.recycler = true;
+				this.hasAction = true;
+				for (const neighbor of this.neighbors) {
+					neighbor.inRangeOfRecycler = true;
+					if (neighbor.scrapAmount === 1) {
+						neighbor.willDestruct = true;
+					}
+				}
+				return `BUILD ${this.x} ${this.y}`;
+			},
+			spawn(amount: number) {
+				// this.units += amount;
+				this.movingUnits += amount;
+				return `SPAWN ${amount} ${this.x} ${this.y}`;
+			},
+			move(cell: Cell, amount: number) {
+				// cell.units += amount;
+				cell.movingUnits += amount;
+				this.units -= amount;
+				return `MOVE ${amount} ${this.x} ${this.y} ${cell.x} ${cell.y}`;
+			},
+			_closestEnemy: null,
+			closestEnemy() {
+				if (!this._closestEnemy) {
+					this._closestEnemy = dfs(this, enemyCell);
+				}
+				return this._closestEnemy;
+			},
+			_closestEmptyCell: null,
+			closestEmptyCell() {
+				if (!this._closestEmptyCell) {
+					this._closestEmptyCell = dfs(this, unownedCell);
+				}
+				return this._closestEmptyCell;
+			},
+			_threat: null,
+			threat() {
+				if (this._threat === null) {
+					this._threat =
+						this.units +
+						this.neighbors.reduce((acc, neighbor) => {
+							if (neighbor.owner === Owner.Opponent) {
+								return acc + neighbor.units;
+							}
+							return acc;
+						}, 0);
+				}
+				return this._threat;
+			},
+			_support: null,
+			support() {
+				if (this._support === null) {
+					this._support =
+						this.units +
+						this.neighbors.reduce((acc, neighbor) => {
+							if (neighbor.owner === Owner.Self) {
+								return acc + neighbor.units;
+							}
+							return acc;
+						}, 0);
+				}
+				return this._support;
+			},
+			_attackPower: null,
+			attackPower() {
+				if (this._attackPower === null) {
+					this._attackPower = this.neighbors.reduce((acc, neighbor) => {
+						if (neighbor.owner === Owner.Self) {
+							return acc + neighbor.units;
+						}
+						return acc;
+					}, 0);
+				}
+				return this._attackPower;
+			},
+			_isBlocking: null,
+			isBlocking() {
+				if (this._isBlocking === null) {
+					// Generate surrounding state
+					const surround = [
+						(() => {
+							const position = { x: this.x - 1, y: this.y - 1 };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+						(() => {
+							const position = { x: this.x, y: this.y - 1 };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+						(() => {
+							const position = { x: this.x + 1, y: this.y - 1 };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+						(() => {
+							const position = { x: this.x - 1, y: this.y };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+						(() => {
+							const position = { x: this.x + 1, y: this.y };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+						(() => {
+							const position = { x: this.x - 1, y: this.y + 1 };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+						(() => {
+							const position = { x: this.x, y: this.y + 1 };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+						(() => {
+							const position = { x: this.x + 1, y: this.y + 1 };
+							return exists(position) ? map[cellKeys[position.y][position.x]] : null;
+						})(),
+					];
+					const blocked = surround.map(
+						(maybeCell) => maybeCell === null || maybeCell.scrapAmount === 0 || maybeCell.recycler
+					);
+					// Match the first blocking pattern which check all angles that would block an open passage
+					this._isBlocking = !!blockingChecks.find((blockCheck) => {
+						return (
+							blockCheck.open.every((i) => !blocked[i]) &&
+							!!blockCheck.open.find(
+								(i) => surround[i] !== null && surround[i]!.owner === Owner.Opponent
+							) &&
+							!!blockCheck.closed.find((list) => list.every((i) => blocked[i]))
+						);
+					});
+				}
+				return this._isBlocking;
+			},
+			_reach: {},
+			reach(ignore: Cell, maxDepth: number) {
+				if (!this._reach[cellKeys[this.y][this.x]]?.[cellKeys[ignore.y][ignore.x]]) {
+					if (!this._reach[cellKeys[this.y][this.x]]) {
+						this._reach[cellKeys[this.y][this.x]] = {};
+					}
+					const explored: { [key: symbol]: boolean } = {
+						[cellKeys[this.y][this.x]]: true,
+						[cellKeys[ignore.y][ignore.x]]: true,
+					};
+					const queue: ScoredCell[] = [{ cell: this, score: 0 }];
+					let reachable = 0;
+					while (queue.length > 0) {
+						const node = queue.splice(0, 1)[0];
+						if (node.score >= maxDepth) {
+							continue;
+						}
+						const neighbors = this.neighbors.filter(
+							(neighbor) => neighbor.scrapAmount > 0 && !neighbor.recycler && !neighbor.willDestruct
+						);
+						for (const neighbor of neighbors) {
+							reachable += 1;
+							const neighborKey = cellKeys[neighbor.y][neighbor.x];
+							if (!explored[neighborKey]) {
+								explored[neighborKey] = true;
+								queue.push({ cell: neighbor, score: node.score + 1 });
+							}
+						}
+					}
+					this._reach[cellKeys[this.y][this.x]][cellKeys[ignore.y][ignore.x]] = reachable;
+				}
+				return this._reach[cellKeys[this.y][this.x]][cellKeys[ignore.y][ignore.x]];
+			},
+			distanceTo(cell: Cell) {
+				return Math.abs(this.x - cell.x) + Math.abs(this.y - cell.y);
+			},
+		};
+		cellKeys[y][x] = key;
 	}
 }
 
 // Turn loop
-let round = 1;
+let round = 0;
 let side: Side;
+let blockedMap = false;
 while (true) {
-	const roundStart = Date.now();
+	const times = {
+		total: Date.now(),
+	};
 
 	// * Parse
 	const inputs: string[] = readline().split(" ");
-	let myMatter: number = parseInt(inputs[0]);
-	const oppMatter: number = parseInt(inputs[1]);
-	const map: TileMap = [];
-	const ownedTiles: Position[] = [];
-	const foeTiles: Position[] = [];
-	const freeTiles: Position[] = [];
-	const selfRobotTiles: Position[] = [];
-	const foeRobotTiles: Position[] = [];
-	let recyclers = 0;
-	// Input
-	for (let i = 0; i < height; i++) {
-		const row: Tile[] = [];
-		for (let j = 0; j < width; j++) {
+	let myMatter = Number(inputs[0]);
+	const opponentMatter = Number(inputs[1]);
+	const ownedCells: Cell[] = [];
+	let selfRealOwnedCells = 0;
+	const opponentCells: Cell[] = [];
+	let opponentRealOwnedCells = 0;
+	const freeCells: Cell[] = [];
+	const selfRobotCells: Cell[] = [];
+	const opponentRobotCells: Cell[] = [];
+	let ownedRecyclers = 0;
+	let opponentRecyclers = 0;
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
 			const inputs: string[] = readline().split(" ");
-			const scrapAmount: number = parseInt(inputs[0]);
-			const owner: Owner = parseInt(inputs[1]); // 1 = self, 0 = foe, -1 = neutral
-			const units: number = parseInt(inputs[2]);
-			const recycler = parseInt(inputs[3]) > 0;
-			const canBuild = parseInt(inputs[4]) > 0;
-			const canSpawn = parseInt(inputs[5]) > 0;
-			const inRangeOfRecycler = parseInt(inputs[6]) > 0;
+			const scrapAmount = Number(inputs[0]);
+			const owner: Owner = Number(inputs[1]); // 1 = self, 0 = foe, -1 = neutral
+			const units = Number(inputs[2]);
+			const recycler = Number(inputs[3]) > 0;
+			const canBuild = Number(inputs[4]) > 0;
+			const canSpawn = Number(inputs[5]) > 0;
+			const inRangeOfRecycler = Number(inputs[6]) > 0;
 			const willDestruct = inRangeOfRecycler && scrapAmount === 1;
-			row.push({
-				x: i,
-				y: j,
-				scrapAmount,
-				owner,
-				units,
-				recycler,
-				canBuild,
-				canSpawn,
-				inRangeOfRecycler,
-				blocked: scrapAmount === 0 || recycler || willDestruct,
-				willDestruct,
-				movingUnits: 0,
-				hasAction: false,
-				neighbors() {
-					const neighbors = [];
-					for (let d = 0; d < 4; d++) {
-						const neighborTilePosition: Position = [this.x + directions[d][0], this.y + directions[d][1]];
-						if (exists(neighborTilePosition)) {
-							neighbors.push(map[neighborTilePosition[0]][neighborTilePosition[1]]);
-						}
-					}
-					return neighbors;
-				},
-			});
+			const cell = map[cellKeys[y][x]];
+			cell.scrapAmount = scrapAmount;
+			cell.owner = owner;
+			cell.units = units;
+			cell.recycler = recycler;
+			cell.canBuild = canBuild;
+			cell.canSpawn = canSpawn;
+			cell.canMove = scrapAmount > 0 && !recycler;
+			cell.inRangeOfRecycler = inRangeOfRecycler;
+			cell.willDestruct = willDestruct;
+			cell.movingUnits = 0;
+			cell.hasAction = false;
+			cell._closestEnemy = null;
+			cell._closestEmptyCell = null;
+			cell._threat = null;
+			cell._isBlocking = null;
 			if (owner === Owner.Self) {
 				if (recycler) {
-					recyclers += 1;
+					ownedRecyclers += 1;
 				}
-				ownedTiles.push([i, j]);
-			} else if (owner === Owner.Foe) {
-				foeTiles.push([i, j]);
+				if (!willDestruct) {
+					ownedCells.push(cell);
+					selfRealOwnedCells += 1;
+				}
+				if (units > 0) {
+					selfRobotCells.push(cell);
+				}
+			} else if (owner === Owner.Opponent) {
+				if (recycler) {
+					opponentRecyclers += 1;
+				}
+				if (!willDestruct) {
+					opponentCells.push(cell);
+					opponentRealOwnedCells += 1;
+				}
+				if (units > 0) {
+					opponentRobotCells.push(cell);
+				}
 			} else {
-				freeTiles.push([i, j]);
-			}
-			if (units > 0) {
-				if (owner === Owner.Self) {
-					selfRobotTiles.push([i, j]);
-				} else {
-					foeRobotTiles.push([i, j]);
-				}
+				freeCells.push(cell);
 			}
 		}
-		map.push(row);
 	}
-	// Find which side we're on on the first round
-	if (round === 1) {
-		if (map[ownedTiles[0][0]][ownedTiles[0][1]].y < width / 2) {
+
+	// * First round setup
+	if (round === 0) {
+		// Find which side we're own to update directions priorities
+		if (ownedCells[0].x < width / 2) {
 			side = Side.Left;
-			directions = [
-				[0, 1],
-				[1, 0],
-				[0, -1],
-				[-1, 0],
-			];
+			if (ownedCells[0].y < height / 2) {
+				directions = [
+					{ x: 0, y: -1 },
+					{ x: 0, y: 1 },
+					{ x: 1, y: 0 },
+					{ x: -1, y: 0 },
+				];
+			} else {
+				directions = [
+					{ x: 0, y: 1 },
+					{ x: 0, y: -1 },
+					{ x: 1, y: 0 },
+					{ x: -1, y: 0 },
+				];
+			}
 		} else {
 			side = Side.Right;
-			directions = [
-				[0, -1],
-				[1, 0],
-				[0, 1],
-				[-1, 0],
-			];
+			if (ownedCells[0].y < height / 2) {
+				directions = [
+					{ x: 0, y: -1 },
+					{ x: 0, y: 1 },
+					{ x: -1, y: 0 },
+					{ x: 1, y: 0 },
+				];
+			} else {
+				directions = [
+					{ x: 0, y: 1 },
+					{ x: 0, y: -1 },
+					{ x: -1, y: 0 },
+					{ x: 1, y: 0 },
+				];
+			}
+		}
+		// Calculate fixed neighbors
+		for (let y = 0; y < height; y++) {
+			for (let x = 0; x < width; x++) {
+				const cellKey = cellKeys[y][x];
+				const neighbors = [];
+				for (let d = 0; d < 4; d++) {
+					const neighborPosition: Position = { x: x + directions[d].x, y: y + directions[d].y };
+					if (
+						exists(neighborPosition) &&
+						map[cellKeys[neighborPosition.y][neighborPosition.x]].scrapAmount > 0
+					) {
+						neighbors.push(map[cellKeys[neighborPosition.y][neighborPosition.x]]);
+					}
+				}
+				map[cellKey].neighbors = neighbors;
+			}
 		}
 	}
 
 	// * Process
-	const action: string[] = [];
-	// ? Defend tiles under threat or with a lot of free estate
-	for (const selfTilePosition of ownedTiles) {
-		const tile = map[selfTilePosition[0]][selfTilePosition[1]];
-		if (tile.hasAction || (!tile.canSpawn && !tile.canBuild)) {
-			continue;
-		}
-		let underThreat = 0;
-		for (const neighbor of tile.neighbors()) {
-			if (neighbor.owner === Owner.Foe && neighbor.units > tile.units) {
-				underThreat = neighbor.units - tile.units + 1;
-				break;
-			}
-		}
-		if (underThreat >= 3 && tile.canBuild) {
-			action.push(`BUILD ${tile.y} ${tile.x}`);
-			tile.hasAction = true;
-			tile.recycler = true;
-			myMatter -= 10;
-		} else if (underThreat > 0 && tile.canBuild && myMatter >= underThreat * 10) {
-			action.push(`SPAWN ${underThreat} ${tile.y} ${tile.x}`);
-			myMatter -= underThreat * 10;
-			tile.hasAction = true;
-			tile.movingUnits += underThreat;
-		}
-	}
-	// ? Farm resources
-	if (recyclers < 5) {
-		const tiles = mostProfitableRecyclerTile(map, ownedTiles);
-		if (tiles.length > 0 && tiles[0][0].scrapAmount > 3) {
-			const tile = tiles[0][0];
-			action.push(`BUILD ${tile.y} ${tile.x}`);
-			tile.hasAction = true;
-			tile.recycler = true;
-			tile.blocked = true;
-			myMatter -= 10;
-		}
-	}
-	// ? Close space
-	if (round >= 5) {
-		for (const selfTilePosition of ownedTiles) {
-			const tile = map[selfTilePosition[0]][selfTilePosition[1]];
-			if (tile.hasAction || !tile.canBuild) {
-				continue;
-			}
-			const summary = adjacentTilesSummary(map, tile);
-			if (summary.enemyTilesAmount > 0 && summary.selfTilesAmount < summary.enemyTilesAmount) {
-				tile.hasAction = true;
-				tile.recycler = true;
-				tile.blocked = true;
-				action.push(`BUILD ${tile.y} ${tile.x}`);
-				myMatter -= 10;
-				if (myMatter < 10) {
-					break;
+	const actions: string[] = [];
+	// ? Attack and defend
+	// Analyze the battlefield to destroy opponent robots or protect a cell
+	const opponentRobotNodes = opponentRobotCells
+		.filter((robot) => robot.neighbors.find((neighbor) => neighbor.owner === Owner.Self && !neighbor.recycler))
+		.sort((a, b) => b.units - a.units);
+	if (opponentRobotNodes.length > 0) {
+		for (const opponentRobot of opponentRobotNodes) {
+			// Destroy the cell if there is enough robots around it to destroy and capture it
+			if (opponentRobot.attackPower() > opponentRobot.threat()) {
+				const neighborRobots = opponentRobot.neighbors
+					.filter((neighbor) => neighbor.owner === Owner.Self && neighbor.units > 0)
+					.sort((a, b) => b.units - a.units);
+				let toKill = opponentRobot.threat() + 1;
+				for (let i = 0; toKill > 0 && i < neighborRobots.length; i++) {
+					const neighbor = neighborRobots[i];
+					const amount = Math.min(neighbor.units, toKill);
+					actions.push(neighbor.move(opponentRobot, amount));
+					toKill -= amount;
 				}
 			}
 		}
 	}
-	// ? Move robots to control, defend or attack
-	for (const selfUnit of selfRobotTiles) {
-		const unitTile = map[selfUnit[0]][selfUnit[1]];
-		if (unitTile.hasAction) {
-			continue;
-		}
-		// * Defend
-		// Don't move if a tile can be defended
-		/*const underThreat = unitTile
-			.neighbors()
-			.reduce(
-				(acc, neighbor) => (neighbor.owner === Owner.Foe && neighbor.units > 0 ? acc + neighbor.units : acc),
-				0
-			);
-		if (underThreat > 0 && unitTile.units >= underThreat) {
-			unitTile.hasAction = true;
-			continue;
-		}*/
-		// * Move
-		const neighborsReach = tileNeighborsMoveReach(map, unitTile, unownedTileCondition, 2).sort(
-			(a, b) => b[1] - a[1]
+	// Handle border cells that have threat
+	const robotNodes = selfRobotCells
+		.filter(
+			(robot) =>
+				robot.units > 0 &&
+				!robot.hasAction &&
+				robot.neighbors.find((neighbor) => neighbor.owner === Owner.Opponent && neighbor.units > 0)
+		)
+		.sort((a, b) => b.threat() - a.threat());
+	for (let i = 0; i < robotNodes.length; i++) {
+		const robotNode = robotNodes[i];
+		const opponentNeighbors = robotNode.neighbors.filter(
+			(neighbor) => neighbor.owner === Owner.Opponent && neighbor.units > 0
 		);
-		if (neighborsReach.length > 0) {
-			const destination = neighborsReach[0][0];
-			destination.hasAction = true;
-			let amount = Math.ceil(unitTile.units * 0.8);
-			if (destination.owner === Owner.Foe) {
-				amount = Math.min(unitTile.units, destination.units + 1);
+		// Settle equal threat with peace
+		if (opponentNeighbors.length === 1) {
+			const opponent = opponentNeighbors[0];
+			if (opponent.threat() === robotNode.support()) {
+				robotNode.hasAction = true;
+			} else if (robotNode.threat() >= robotNode.support()) {
+				const toSpawn = robotNode.threat() - robotNode.support();
+				if (myMatter >= toSpawn * 10) {
+					actions.push(robotNode.spawn(toSpawn));
+					myMatter -= toSpawn * 10;
+				} else {
+					const safeEscape = robotNode.neighbors.find(
+						(neighbor) => neighbor.owner !== Owner.Opponent || neighbor.units < robotNode.units
+					);
+					if (safeEscape) {
+						actions.push(robotNode.move(safeEscape, robotNode.units));
+					} else {
+						robotNode.hasAction = true;
+					}
+				}
 			}
-			destination.movingUnits += amount;
-			action.push(`MOVE ${amount} ${unitTile.y} ${unitTile.x} ${destination.y} ${destination.x}`);
+		} // If there is multiple opponents, do something ?
+		else {
+			if (robotNode.threat() === robotNode.support()) {
+				robotNode.hasAction = true;
+			} else if (robotNode.threat() >= robotNode.support()) {
+				const toSpawn = robotNode.threat() - robotNode.support();
+				if (myMatter >= toSpawn * 10) {
+					actions.push(robotNode.spawn(toSpawn));
+					myMatter -= toSpawn * 10;
+				} else {
+					const safeEscape = robotNode.neighbors.find(
+						(neighbor) => neighbor.owner !== Owner.Opponent || neighbor.units < robotNode.units
+					);
+					if (safeEscape) {
+						actions.push(robotNode.move(safeEscape, robotNode.units));
+					} else {
+						robotNode.hasAction = true;
+					}
+				}
+			}
 		}
 	}
-	// ? Find the most profitable cells to spawn new robots on
-	if (myMatter >= 20) {
-		const mostProfitable = mostProfitableSpawnTiles(map, ownedTiles);
-		for (const tile of mostProfitable) {
-			const summary = adjacentTilesSummary(map, tile[0]);
-			const toSpawn = Math.ceil(Math.max(10, Math.min(summary.enemyTilesAmount * 10, myMatter)) / 10);
-			action.push(`SPAWN ${toSpawn} ${tile[0].y} ${tile[0].x}`);
-			myMatter -= toSpawn * 10;
-			if (myMatter < 10) {
+	// ? Block
+	// If a cell block a single cell passage, close it to reduce the rogue possibilities
+	if (myMatter >= 10) {
+		const blockBorderCells = ownedCells
+			.filter(
+				(cell) =>
+					cell.canBuild &&
+					cell.closestEnemy() !== null &&
+					cell.neighbors.find(
+						(neighbor) => neighbor.owner !== Owner.Self && !neighbor.willDestruct && !neighbor.recycler
+					)
+			)
+			.sort((a, b) => b.units - a.units);
+		for (let i = 0; myMatter >= 10 && i < blockBorderCells.length; i++) {
+			const borderCell = blockBorderCells[i];
+			if (borderCell.isBlocking()) {
+				actions.push(borderCell.buildRecycler());
+				myMatter -= 10;
+			}
+		}
+	}
+	// ? Explore
+	// Select border cells and assign the closest robots to them, prioritizing spread in the direction of the opponent
+	const added: CellHashSet = {};
+	let outerBorderCells = [];
+	for (const cell of ownedCells) {
+		if (cell.closestEnemy() !== null) {
+			outerBorderCells.push(
+				...cell.neighbors.filter((neighbor) => {
+					const inBorder =
+						!added[cellKeys[neighbor.y][neighbor.x]] &&
+						neighbor.owner !== Owner.Self &&
+						neighbor.canMove &&
+						!neighbor.willDestruct &&
+						!neighbor.recycler &&
+						neighbor.scrapAmount > 0 &&
+						neighbor.closestEnemy() !== null;
+					if (inBorder) {
+						added[cellKeys[neighbor.y][neighbor.x]] = true;
+					}
+					return inBorder;
+				})
+			);
+		}
+	}
+	outerBorderCells = outerBorderCells.sort((a, b) => a.closestEnemy()!.score - b.closestEnemy()!.score);
+	// Assign the closest outer border cells for each available robots
+	/* const availableRobots = selfRobotCells.filter((cell) => cell.units > 0);
+	for (let i = 0; outerBorderCells.length > 0 && i < availableRobots.length; i++) {
+		const cell = availableRobots[i];
+		const outerBorderDestination = outerBorderCells.sort((a, b) => a.distanceTo(cell) - b.distanceTo(cell))[0];
+		const fromNeighbor = cell.neighbors.sort(prioritizeSpreadToCell(outerBorderDestination))[0];
+		actions.push(cell.move(fromNeighbor, 1));
+		const outerBorderIndex = outerBorderCells.findIndex(
+			(cell) => cell.x === outerBorderDestination.x && cell.y === outerBorderDestination.y
+		);
+		outerBorderCells.splice(outerBorderIndex, 1);
+	} */
+	// Assign the closest robot for each outer border cells
+	while (outerBorderCells.length > 0) {
+		const cell = outerBorderCells.shift()!;
+		const closestRobot = dfs(cell, ownedAvailableRobot);
+		if (closestRobot) {
+			const fromNeighbor = closestRobot.cell.neighbors.sort(prioritizeSpreadToCell(cell))[0];
+			actions.push(closestRobot.cell.move(fromNeighbor, 1));
+		} else {
+			// Out of robots to use
+			break;
+		}
+	}
+	// ? Move closed robots
+	// Robots that can't reach any opponent cell should just wander and finish conquering what's available
+	const closedRobots = selfRobotCells
+		.filter((robot) => robot.units > 0 && robot.closestEnemy() === null && robot.closestEmptyCell() !== null)
+		.sort((a, b) => a.closestEmptyCell()!.score - b.closestEmptyCell()!.score);
+	for (let i = 0; i < closedRobots.length; i++) {
+		const robotNode = closedRobots[i];
+		actions.push(robotNode.move(robotNode.closestEmptyCell()!.cell, 1));
+	}
+	// ? Farm
+	if (myMatter >= 10 && ownedRecyclers < 3 && ownedRecyclers <= opponentRecyclers) {
+		const cells = mostProfitableRecyclerCells(ownedCells);
+		if (cells.length > 0) {
+			const cell = cells[0].cell;
+			actions.push(cell.buildRecycler());
+			myMatter -= 10;
+		}
+	}
+	// ? Spawn
+	// Find unassigned outer border cells and spawn to the best and nearest owned cell
+	if (myMatter >= 10 && selfRobotCells.length < exploreSpawnLimit) {
+		// The cells are still sorted by their distance to the closest opponent cell
+		// -- and outerBorderCells only has unassigned outer border cells since they're removed on use
+		let availableRobots = selfRobotCells.length;
+		for (
+			let i = 0;
+			myMatter >= 10 && availableRobots < exploreSpawnLimit && i < outerBorderCells.slice().length;
+			i++
+		) {
+			const cell = outerBorderCells[i];
+			const closestOwned = dfs(cell, ownedSpawnable);
+			if (closestOwned) {
+				actions.push(closestOwned.cell.spawn(1));
+				myMatter -= 10;
+				availableRobots += 1;
+			} else {
 				break;
 			}
 		}
 	}
+	if (myMatter >= 50) {
+		const closedCells = ownedCells
+			.filter((cell) => cell.closestEnemy() === null && cell.closestEmptyCell() !== null)
+			.sort((a, b) => a.closestEmptyCell()!.score - b.closestEmptyCell()!.score);
+		if (closedCells.length > 0) {
+			actions.push(closedCells[0].spawn(1));
+			myMatter -= 10;
+		}
+	}
 
 	// * Done
-	if (action.length > 0) {
-		console.log(`MESSAGE ${Date.now() - roundStart}ms;${action.join(";")}`);
+	/***/ times.total = Date.now() - times.total;
+	actions.unshift(`MESSAGE ${times.total}`);
+	if (actions.length > 1) {
+		console.log(`${actions.join(";")}`);
 	} else {
-		console.log(`MESSAGE ${Date.now() - roundStart}ms;WAIT`);
+		console.log(`${actions.join(";")};WAIT`);
 	}
 
 	round += 1;
